@@ -120,12 +120,14 @@
       </div>
     </div>
 
-    <!-- Entry Reason -->
+    <!-- Entry Reason (Badge Style) -->
     <div id="reason-card" class="mt-4 bg-slate-900/70 border border-slate-800 rounded-xl p-5">
-      <p class="text-xs text-slate-500 mb-1 flex items-center gap-2">
+      <p class="text-xs text-slate-500 mb-3 flex items-center gap-2">
         <i class="fas fa-lightbulb text-amber-400"></i> Entry Reason (Confluence)
       </p>
-      <p id="entry-reason" class="text-sm text-slate-200 leading-relaxed">—</p>
+      <div id="entry-reason" class="flex flex-wrap gap-2">
+        <span class="text-sm text-slate-400">—</span>
+      </div>
     </div>
   </div>
 
@@ -175,7 +177,7 @@
     <p id="rationale" class="text-sm text-slate-300">—</p>
   </div>
 
-  <!-- History (tanpa kolom Reason) -->
+  <!-- History -->
   <div class="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden">
     <div class="px-6 py-4 border-b border-slate-800 flex justify-between items-center">
       <h3 class="font-semibold"><i class="fas fa-history mr-2 text-slate-400"></i>Trade History</h3>
@@ -265,9 +267,31 @@
     document.getElementById("bias").className = bias === "BULLISH" ? "text-sm font-semibold text-emerald-400" :
                                                  bias === "BEARISH" ? "text-sm font-semibold text-red-400" : "text-sm font-semibold";
 
-    const reason = tech.entry_reason || data.execution_parameters?.entry_reason || "—";
-    document.getElementById("entry-reason").textContent = reason;
+    // ===== Entry Reason sebagai Badge =====
+    const reasonRaw = tech.entry_reason || data.execution_parameters?.entry_reason || "";
+    const reasonEl = document.getElementById("entry-reason");
 
+    if (!reasonRaw || reasonRaw === "—" || reasonRaw === "No clear confluence") {
+      reasonEl.innerHTML = `<span class="text-sm text-slate-400">—</span>`;
+    } else {
+      const parts = reasonRaw.split("+").map(p => p.trim()).filter(p => p);
+      reasonEl.innerHTML = parts.map(part => {
+        let color = "bg-slate-700 text-slate-200";
+        const lower = part.toLowerCase();
+        if (lower.includes("bos") || lower.includes("choch")) {
+          color = "bg-blue-900/60 text-blue-300 border border-blue-700/50";
+        } else if (lower.includes("ob")) {
+          color = "bg-amber-900/50 text-amber-300 border border-amber-700/50";
+        } else if (lower.includes("fvg")) {
+          color = "bg-purple-900/50 text-purple-300 border border-purple-700/50";
+        } else if (lower.includes("swept") || lower.includes("liquidity")) {
+          color = "bg-emerald-900/50 text-emerald-300 border border-emerald-700/50";
+        }
+        return `<span class="px-3 py-1.5 rounded-lg text-xs font-medium ${color}">${part}</span>`;
+      }).join("");
+    }
+
+    // Fundamental
     const fund = data.fundamental_layer || {};
     document.getElementById("fund-status").textContent = fund.scalping_status || "—";
     document.getElementById("fund-recommendation").textContent = fund.recommendation || "—";
