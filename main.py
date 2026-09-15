@@ -1,24 +1,24 @@
-# main.py - Apex SMC Intelligence v10.2
-# Confidence Score lebih akurat + Multi-Timeframe Bias
+# main.py - Apex SMC Intelligence v10.3
+# Deteksi Struktur & HTF diperbaiki (lebih dekat TradingView)
 
 from fastapi import FastAPI, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from datetime import datetime, timezone
 import time, os, json, requests, numpy as np
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 import logging
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("SMC-Engine")
 
-app = FastAPI(title="Apex SMC Intelligence", version="10.2")
+app = FastAPI(title="Apex SMC Intelligence", version="10.3")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 TWELVE_DATA_API_KEY = os.getenv("TWELVE_DATA_API_KEY", "ed06e6d76c6e42d88fdf510856d9b900")
 HISTORY_FILE = "trade_history.json"
 CACHE_TTL = 8
 FUND_CACHE_TTL = 300
-MIN_SCORE_TO_TRADE = 72  # Minimal score untuk keluar sinyal
+MIN_SCORE_TO_TRADE = 72
 
 cache_store = {}
 price_cache = {}
@@ -43,7 +43,7 @@ def save_history():
 
 load_history()
 
-# ==================== PRICE (biquote) ====================
+# ==================== PRICE ====================
 def fetch_realtime_price(symbol: str) -> Dict:
     key = f"price_{symbol}"
     now = time.time()
@@ -107,43 +107,119 @@ def calculate_atr(candles, period=14):
     trs = []
     for i in range(1, len(candles)):
         h, l, pc = candles[i]["high"], candles[i]["low"], candles[i-1]["close"]
-        trs.append(max(h-l, abs(h-pc), abs(l-pc)))
+        trs.append(max(h - l, abs(h - pc), abs(l - pc)))
     return round(float(np.mean(trs[-period:])), 5)
 
-def find_swings(highs, lows, left=2, right=2):
+# ==================== IMPROVED STRUCTURE DETECTION ====================
+def find_swings(highs, lows, left=3, right=3):
+    """Deteksi swing lebih stabil (mendekati TradingView)"""
     sh, sl = [], []
-    for i in range(left, len(highs)-right):
-        if highs[i] == max(highs[i-left:i+right+1]): sh.append((i, highs[i]))
-        if lows[i] == min(lows[i-left:i+right+1]): sl.append((i, lows[i]))
+    n = len(highs)
+    for i in range(left, n - right):
+        if highs[i] == max(highs[i - left:i + right + 1]):
+            sh.append((i, float(highs[i])))
+        if lows[i] == min(lows[i - left:i + right + 1]):
+            sl.append((i, float(lows[i])))
     return sh, sl
 
-def get_structure_bias(candles):
-    """Return bias + structure text dari candles"""
-    if len(candles) < 20:
-        return "NEUTRAL", "Insufficient"
+def get_structure_bias(candles) -> Tuple[str, str]:
+    """
+    Deteksi bias + struktur yang lebih sensitif terhadap CHoCH.
+    Return: (bias, structure_text)
+    """
+    if len(candles) < 25:
+        return "NEUTRAL", "Insufficient Data"
+
     highs = np.array([c["high"] for c in candles])
     lows = np.array([c["low"] for c in candles])
     closes = np.array([c["close"] for c in candles])
     current = float(closes[-1])
-    sh, sl = find_swings(highs, lows)
-    structure, bias = "RANGE", "NEUTRAL"
-    if len(sh) >= 2 and len(sl) >= 2:
-        if sh[-1][1] > sh[-2][1] and sl[-1][1] > sl[-2][1]:
-            structure, bias = "BULLISH BOS (HH+HL)", "BULLISH"
-        elif sh[-1][1] < sh[-2][1] and sl[-1][1] < sl[-2][1]:
-            structure, bias = "BEARISH BOS (LH+LL)", "BEARISH"
-        elif sh[-1][1] > sh[-2][1] and sl[-1][1] < sl[-2][1]:
-            structure, bias = "CHoCH → Bullish", "BULLISH"
-        elif sh[-1][1] < sh[-2][1] and sl[-1][1] > sl[-2][1]:
-            structure, bias = "CHoCH → Bearish", "BEARISH"
-    rh, rl = np.max(highs[-12:-2]) if len(highs) > 12 else highs[-1], np.min(lows[-12:-2]) if len(lows) > 12 else lows[-1]
-    if current > rh and bias == "NEUTRAL":
-        structure, bias = "BULLISH BOS", "BULLISH"
-    elif current < rl and bias == "NEUTRAL":
-        structure, bias = "BEARISH BOS", "BEARISH"
+
+    # Swing dengan sensitivitas sedang
+    sh, sl = find_swings(highs, lows, left=3, right=3)
+
+    if len(sh) < 2 or len(sl) < 2:
+        # fallback lebih sensitif
+        sh, sl = find_swings(highs, lows, left=2, right=2)
+        if len(sh) < 2 or len(sl) < 2:
+            return "NEUTRAL", "RANGE / CHOPPY"
+
+    # Ambil 3 swing terakhir (lebih akurat untuk CHoCH)
+    last_sh = sh[-3:] if len(sh) >= 3 else sh
+    last_sl = sl[-3:] if len(sl) >= 3 else sl
+
+    # Default
+    bias = "NEUTRAL"
+    structure = "RANGE / CHOPPY"
+
+    # --- BOS klasik ---
+    if len(last_sh) >= 2 and len(last_sl) >= 2:
+        # Bullish BOS: HH + HL
+        if last_sh[-1][1] > last_sh[-2][1] and last_sl[-1][1] > last_sl[-2][1]:
+            structure = "BULLISH BOS (HH+HL)"
+            bias = "BULLISH"
+        # Bearish BOS: LH + LL
+        elif last_sh[-1][1] < last_sh[-2][1] and last_sl[-1][1] < last_sl[-2][1]:
+            structure = "BEARISH BOS (LH+LL)"
+            bias = "BEARISH"
+
+    # --- CHoCH detection (lebih agresif) ---
+    # CHoCH Bullish: setelah downtrend, buat HH
+    if len(last_sh) >= 2 and len(last_sl) >= 2:
+        # Sebelumnya downtrend (LH), lalu HH muncul
+        if last_sh[-2][1] < last_sh[-3][1] if len(last_sh) >= 3 else True:
+            if last_sh[-1][1] > last_sh[-2][1] and last_sl[-1][1] < last_sl[-2][1]:
+                structure = "CHoCH → Bullish"
+                bias = "BULLISH"
+        # Sebelumnya uptrend (HH), lalu LH muncul
+        if last_sh[-2][1] > last_sh[-3][1] if len(last_sh) >= 3 else True:
+            if last_sh[-1][1] < last_sh[-2][1] and last_sl[-1][1] > last_sl[-2][1]:
+                structure = "CHoCH → Bearish"
+                bias = "BEARISH"
+
+    # --- Break of recent swing (konfirmasi tambahan) ---
+    recent_high = max([s[1] for s in sh[-4:]]) if len(sh) >= 2 else highs[-5]
+    recent_low = min([s[1] for s in sl[-4:]]) if len(sl) >= 2 else lows[-5]
+
+    # Jika harga sudah break recent low → prioritaskan bearish
+    if current < recent_low and bias != "BEARISH":
+        # Cek apakah sebelumnya ada uptrend
+        if len(sh) >= 2 and sh[-1][1] < sh[-2][1]:
+            structure = "CHoCH → Bearish (Break Low)"
+            bias = "BEARISH"
+        elif bias == "NEUTRAL":
+            structure = "BEARISH BOS (Break Low)"
+            bias = "BEARISH"
+
+    # Jika harga sudah break recent high → prioritaskan bullish
+    if current > recent_high and bias != "BULLISH":
+        if len(sl) >= 2 and sl[-1][1] > sl[-2][1]:
+            structure = "CHoCH → Bullish (Break High)"
+            bias = "BULLISH"
+        elif bias == "NEUTRAL":
+            structure = "BULLISH BOS (Break High)"
+            bias = "BULLISH"
+
+    # --- Last resort: slope of last 8 closes ---
+    if bias == "NEUTRAL" and len(closes) >= 8:
+        slope = closes[-1] - closes[-8]
+        if slope > atr_approx(candles) * 0.5:
+            bias, structure = "BULLISH", "BULLISH Momentum"
+        elif slope < -atr_approx(candles) * 0.5:
+            bias, structure = "BEARISH", "BEARISH Momentum"
+
     return bias, structure
 
-# ==================== SMC + ACCURATE CONFIDENCE ====================
+def atr_approx(candles, period=10):
+    if len(candles) < period + 1:
+        return 1.0
+    trs = []
+    for i in range(1, min(len(candles), period + 1)):
+        h, l, pc = candles[-i]["high"], candles[-i]["low"], candles[-i - 1]["close"]
+        trs.append(max(h - l, abs(h - pc), abs(l - pc)))
+    return float(np.mean(trs)) if trs else 1.0
+
+# ==================== SMC ANALYSIS ====================
 def analyze_pure_smc(candles, htf_candles=None):
     if len(candles) < 30:
         return {
@@ -162,49 +238,54 @@ def analyze_pure_smc(candles, htf_candles=None):
     atr = calculate_atr(candles)
     last_time = candles[-1]["datetime"]
 
-    # --- LTF Structure ---
+    # LTF Structure (improved)
     bias, structure = get_structure_bias(candles)
 
-    # --- HTF Bias ---
+    # HTF Bias (improved)
     htf_bias = "NEUTRAL"
-    if htf_candles and len(htf_candles) >= 20:
-        htf_bias, _ = get_structure_bias(htf_candles)
+    if htf_candles and len(htf_candles) >= 30:
+        htf_bias, htf_structure = get_structure_bias(htf_candles)
+    else:
+        htf_structure = "N/A"
 
-    # --- Liquidity ---
-    rh, rl = np.max(highs[-12:-2]), np.min(lows[-12:-2])
+    # Liquidity
+    rh = np.max(highs[-15:-2]) if len(highs) > 15 else np.max(highs[:-1])
+    rl = np.min(lows[-15:-2]) if len(lows) > 15 else np.min(lows[:-1])
     liq = "Protected"
     if highs[-1] > rh and current_price < rh * 0.998:
         liq = "BSL Swept"
-        if bias != "BULLISH": bias = "BEARISH"
+        if bias != "BULLISH":
+            bias = "BEARISH"
     elif lows[-1] < rl and current_price > rl * 1.002:
         liq = "SSL Swept"
-        if bias != "BEARISH": bias = "BULLISH"
+        if bias != "BEARISH":
+            bias = "BULLISH"
 
-    # --- FVG ---
+    # FVG
     fvg = "No Valid FVG"
-    for i in range(len(candles)-3, max(len(candles)-8, 2), -1):
-        if candles[i]["low"] > candles[i-2]["high"]:
+    for i in range(len(candles) - 3, max(len(candles) - 10, 2), -1):
+        if candles[i]["low"] > candles[i - 2]["high"]:
             fvg = f"Bullish FVG [{candles[i-2]['high']:.5f}-{candles[i]['low']:.5f}]"
             break
-        if candles[i]["high"] < candles[i-2]["low"]:
+        if candles[i]["high"] < candles[i - 2]["low"]:
             fvg = f"Bearish FVG [{candles[i]['high']:.5f}-{candles[i-2]['low']:.5f}]"
             break
 
-    # --- Order Block ---
+    # Order Block
     ob = "None"
-    for i in range(len(candles)-3, max(len(candles)-20, 2), -1):
+    for i in range(len(candles) - 3, max(len(candles) - 25, 2), -1):
         if bias == "BULLISH" and candles[i]["close"] < candles[i]["open"]:
-            if candles[i+1]["close"] > candles[i]["high"]:
+            if i + 1 < len(candles) and candles[i + 1]["close"] > candles[i]["high"]:
                 ob = f"Bullish OB @ {candles[i]['low']:.5f}-{candles[i]['high']:.5f}"
                 break
         if bias == "BEARISH" and candles[i]["close"] > candles[i]["open"]:
-            if candles[i+1]["close"] < candles[i]["low"]:
+            if i + 1 < len(candles) and candles[i + 1]["close"] < candles[i]["low"]:
                 ob = f"Bearish OB @ {candles[i]['low']:.5f}-{candles[i]['high']:.5f}"
                 break
 
-    # --- Entry Reason ---
+    # Entry Reason
     reasons = []
-    if "BOS" in structure or "CHoCH" in structure:
+    if "BOS" in structure or "CHoCH" in structure or "Momentum" in structure:
         reasons.append(structure)
     if "OB" in ob and ob != "None":
         reasons.append(ob)
@@ -216,43 +297,42 @@ def analyze_pure_smc(candles, htf_candles=None):
         reasons.append(f"HTF {htf_bias}")
     entry_reason = " + ".join(reasons) if reasons else "No clear confluence"
 
-    # ========== ACCURATE CONFIDENCE SCORE ==========
+    # ========== CONFIDENCE SCORE ==========
     score_detail = {}
     score = 0
 
-    # 1. Structure (max 25)
     if "BOS" in structure:
         score += 25
         score_detail["structure"] = 25
     elif "CHoCH" in structure:
-        score += 18
-        score_detail["structure"] = 18
+        score += 20
+        score_detail["structure"] = 20
+    elif "Momentum" in structure:
+        score += 12
+        score_detail["structure"] = 12
     else:
-        score_detail["structure"] = 5
         score += 5
+        score_detail["structure"] = 5
 
-    # 2. Order Block (max 18)
     if "OB" in ob and ob != "None":
         score += 18
         score_detail["order_block"] = 18
     else:
         score_detail["order_block"] = 0
 
-    # 3. FVG (max 15)
     if "FVG" in fvg and "No Valid" not in fvg:
         score += 15
         score_detail["fvg"] = 15
     else:
         score_detail["fvg"] = 0
 
-    # 4. Liquidity Sweep (max 15)
     if "Swept" in liq:
         score += 15
         score_detail["liquidity"] = 15
     else:
         score_detail["liquidity"] = 0
 
-    # 5. HTF Alignment (max 20)  ← Multi-Timeframe
+    # HTF Alignment
     if htf_bias == bias and bias != "NEUTRAL":
         score += 20
         score_detail["htf_alignment"] = 20
@@ -260,10 +340,9 @@ def analyze_pure_smc(candles, htf_candles=None):
         score += 8
         score_detail["htf_alignment"] = 8
     else:
-        score += 0   # conflict HTF
+        score += 0
         score_detail["htf_alignment"] = 0
 
-    # 6. Confluence count bonus (max 7)
     confluence_count = sum([
         1 if score_detail.get("structure", 0) >= 18 else 0,
         1 if score_detail.get("order_block", 0) > 0 else 0,
@@ -274,10 +353,8 @@ def analyze_pure_smc(candles, htf_candles=None):
     bonus = min(confluence_count * 2, 7)
     score += bonus
     score_detail["confluence_bonus"] = bonus
-
     score = min(int(score), 98)
 
-    # Label
     if score >= 82:
         score_label = "HIGH"
     elif score >= 72:
@@ -285,7 +362,6 @@ def analyze_pure_smc(candles, htf_candles=None):
     else:
         score_label = "LOW"
 
-    # Setup decision
     setup = "WAIT FOR MITIGATION"
     if bias == "BULLISH" and score >= MIN_SCORE_TO_TRADE and (score_detail.get("order_block") or score_detail.get("fvg")):
         setup = "BUY LIMIT (OTE)"
@@ -306,7 +382,8 @@ def analyze_pure_smc(candles, htf_candles=None):
         "atr": atr,
         "last_candle_time": last_time,
         "entry_reason": entry_reason,
-        "htf_bias": htf_bias
+        "htf_bias": htf_bias,
+        "htf_structure": htf_structure if htf_candles else "N/A"
     }
 
 # ==================== FUNDAMENTAL ====================
@@ -321,7 +398,8 @@ def fetch_high_impact():
             fundamental_cache["data"] = events
             fundamental_cache["time"] = now
             return events
-    except: pass
+    except:
+        pass
     return fundamental_cache["data"] or []
 
 def analyze_fundamental_xau():
@@ -333,14 +411,16 @@ def analyze_fundamental_xau():
         try:
             et = datetime.fromisoformat(ev["time"].replace("Z", "+00:00"))
             mins = (et - now).total_seconds() / 60
-            if mins < -45: continue
+            if mins < -45:
+                continue
             name = ev["name"]
             if any(k in name.lower() for k in critical) or ev.get("importance") == "high":
                 info = {"name": name, "minutes_left": round(mins, 1)}
                 upcoming.append(info)
                 if 0 <= mins < min_m:
                     min_m, next_ev = mins, info
-        except: continue
+        except:
+            continue
     if not next_ev:
         return {"scalping_status": "SAFE FOR SCALPING", "risk_level": "LOW",
                 "recommendation": "Tidak ada High Impact. Scalping aman.",
@@ -365,7 +445,8 @@ def manage_trades(symbol: str, current_price: float):
     global trade_history
     changed = False
     for t in trade_history:
-        if t["symbol"] != symbol: continue
+        if t["symbol"] != symbol:
+            continue
         entry = float(t["entry"])
         sl = float(t["sl"])
         tp1 = float(t["tp1"])
@@ -384,21 +465,25 @@ def manage_trades(symbol: str, current_price: float):
                 t["close_price"] = str(round(current_price, 5))
                 t["close_time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 changed = True
-
         elif t["status"] == "FILLED & ACTIVE":
             hit = None
             if is_buy:
-                if current_price <= sl: hit = "SL HIT"
-                elif current_price >= tp1: hit = "TP1 HIT"
+                if current_price <= sl:
+                    hit = "SL HIT"
+                elif current_price >= tp1:
+                    hit = "TP1 HIT"
             else:
-                if current_price >= sl: hit = "SL HIT"
-                elif current_price <= tp1: hit = "TP1 HIT"
+                if current_price >= sl:
+                    hit = "SL HIT"
+                elif current_price <= tp1:
+                    hit = "TP1 HIT"
             if hit:
                 t["status"] = f"CLOSED - {hit}"
                 t["close_price"] = str(round(current_price, 5))
                 t["close_time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 changed = True
-    if changed: save_history()
+    if changed:
+        save_history()
     return changed
 
 # ==================== ENDPOINTS ====================
@@ -409,18 +494,20 @@ async def get_price(symbol: str):
 @app.get("/api/max-intelligence-signal/{symbol:path}")
 async def get_signal(symbol: str, timeframe: str = Query("5min"), custom_atr: Optional[float] = Query(None), auto_lock: bool = Query(True)):
     decoded = symbol.replace("'", "").strip().upper()
-    if not decoded: raise HTTPException(400, "Symbol required")
+    if not decoded:
+        raise HTTPException(400, "Symbol required")
 
     price_data = fetch_realtime_price(decoded)
     current_price = price_data["price"]
 
     candles = fetch_candles(decoded, timeframe, force=True)
-    if not candles: raise HTTPException(503, "Cannot fetch market data")
+    if not candles:
+        raise HTTPException(503, "Cannot fetch market data")
     if current_price > 0:
         candles[-1]["close"] = current_price
 
-    # HTF candles (1H untuk multi-timeframe)
-    htf_candles = fetch_candles(decoded, "1h", outputsize=50, force=False)
+    # HTF 1H dengan lebih banyak candle
+    htf_candles = fetch_candles(decoded, "1h", outputsize=80, force=False)
 
     last_candle_time = candles[-1]["datetime"]
     manage_trades(decoded, current_price)
@@ -441,7 +528,7 @@ async def get_signal(symbol: str, timeframe: str = Query("5min"), custom_atr: Op
             },
             "fundamental_layer": fund,
             "master_decision": {
-                "action": f"{'HOLD' if active['status']=='FILLED & ACTIVE' else 'WAITING'} ({active['type']})",
+                "action": f"{'HOLD' if active['status'] == 'FILLED & ACTIVE' else 'WAITING'} ({active['type']})",
                 "confidence_score": "100%",
                 "execution_status": active["status"]
             },
@@ -467,12 +554,10 @@ async def get_signal(symbol: str, timeframe: str = Query("5min"), custom_atr: Op
     entry = sl = tp1 = tp2 = "-"
     rrr = "0.0"
 
-    # Fundamental block
     if fund["risk_level"] in ["EXTREME", "HIGH"]:
         action = "WAIT - HIGH IMPACT NEWS RISK"
         status = "BLOCKED BY FUNDAMENTAL"
         confidence = max(20, confidence - 30)
-    # Score terlalu rendah
     elif smc["score"] < MIN_SCORE_TO_TRADE:
         action = "WAIT - LOW CONFIDENCE"
         status = "SCORE TOO LOW"
@@ -520,6 +605,7 @@ async def get_signal(symbol: str, timeframe: str = Query("5min"), custom_atr: Op
             "liquidity_pool": smc["liquidity"],
             "institutional_bias": smc["bias"],
             "htf_bias": smc["htf_bias"],
+            "htf_structure": smc.get("htf_structure", "-"),
             "smc_score": smc["score"],
             "score_label": smc["score_label"],
             "score_detail": smc["score_detail"],
@@ -540,7 +626,7 @@ async def get_signal(symbol: str, timeframe: str = Query("5min"), custom_atr: Op
             "last_candle_time": last_candle_time,
             "entry_reason": smc["entry_reason"]
         },
-        "ai_rationale": f"Pair: {decoded} | Score: {smc['score']} ({smc['score_label']}) | HTF: {smc['htf_bias']} | {smc['entry_reason']}"
+        "ai_rationale": f"Pair: {decoded} | Score: {smc['score']} ({smc['score_label']}) | LTF: {smc['bias']} | HTF: {smc['htf_bias']} ({smc.get('htf_structure', '-')}) | {smc['entry_reason']}"
     }
 
 @app.get("/api/fundamental/{symbol}")
@@ -560,7 +646,7 @@ async def reset_history():
 
 @app.get("/api/health")
 async def health():
-    return {"status": "healthy", "version": "10.2", "trades": len(trade_history)}
+    return {"status": "healthy", "version": "10.3", "trades": len(trade_history)}
 
 if __name__ == "__main__":
     import uvicorn
