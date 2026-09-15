@@ -1,6 +1,6 @@
-# main.py - Apex SMC Intelligence v10.4
+# main.py - Apex SMC Intelligence v10.4.1
 # Deteksi Struktur & HTF diperbaiki (lebih dekat TradingView)
-# + Fill Detection sangat akurat (menggunakan High/Low 1min + realtime)
+# + Fill Detection akurat + Toleransi 0.6 poin (atasi beda feed)
 
 from fastapi import FastAPI, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -12,7 +12,7 @@ import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("SMC-Engine")
 
-app = FastAPI(title="Apex SMC Intelligence", version="10.4")
+app = FastAPI(title="Apex SMC Intelligence", version="10.4.1")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 TWELVE_DATA_API_KEY = os.getenv("TWELVE_DATA_API_KEY", "ed06e6d76c6e42d88fdf510856d9b900")
@@ -20,6 +20,9 @@ HISTORY_FILE = "trade_history.json"
 CACHE_TTL = 8
 FUND_CACHE_TTL = 300
 MIN_SCORE_TO_TRADE = 72
+
+# Toleransi fill untuk mengatasi perbedaan harga antar broker / data provider
+FILL_TOLERANCE = 0.6   # poin (bisa diubah 0.4 ~ 1.0)
 
 cache_store = {}
 price_cache = {}
@@ -113,7 +116,6 @@ def calculate_atr(candles, period=14):
 
 # ==================== IMPROVED STRUCTURE DETECTION ====================
 def find_swings(highs, lows, left=3, right=3):
-    """Deteksi swing lebih stabil (mendekati TradingView)"""
     sh, sl = [], []
     n = len(highs)
     for i in range(left, n - right):
@@ -124,10 +126,6 @@ def find_swings(highs, lows, left=3, right=3):
     return sh, sl
 
 def get_structure_bias(candles) -> Tuple[str, str]:
-    """
-    Deteksi bias + struktur yang lebih sensitif terhadap CHoCH.
-    Return: (bias, structure_text)
-    """
     if len(candles) < 25:
         return "NEUTRAL", "Insufficient Data"
 
@@ -136,55 +134,41 @@ def get_structure_bias(candles) -> Tuple[str, str]:
     closes = np.array([c["close"] for c in candles])
     current = float(closes[-1])
 
-    # Swing dengan sensitivitas sedang
     sh, sl = find_swings(highs, lows, left=3, right=3)
 
     if len(sh) < 2 or len(sl) < 2:
-        # fallback lebih sensitif
         sh, sl = find_swings(highs, lows, left=2, right=2)
         if len(sh) < 2 or len(sl) < 2:
             return "NEUTRAL", "RANGE / CHOPPY"
 
-    # Ambil 3 swing terakhir (lebih akurat untuk CHoCH)
     last_sh = sh[-3:] if len(sh) >= 3 else sh
     last_sl = sl[-3:] if len(sl) >= 3 else sl
 
-    # Default
     bias = "NEUTRAL"
     structure = "RANGE / CHOPPY"
 
-    # --- BOS klasik ---
     if len(last_sh) >= 2 and len(last_sl) >= 2:
-        # Bullish BOS: HH + HL
         if last_sh[-1][1] > last_sh[-2][1] and last_sl[-1][1] > last_sl[-2][1]:
             structure = "BULLISH BOS (HH+HL)"
             bias = "BULLISH"
-        # Bearish BOS: LH + LL
         elif last_sh[-1][1] < last_sh[-2][1] and last_sl[-1][1] < last_sl[-2][1]:
             structure = "BEARISH BOS (LH+LL)"
             bias = "BEARISH"
 
-    # --- CHoCH detection (lebih agresif) ---
-    # CHoCH Bullish: setelah downtrend, buat HH
     if len(last_sh) >= 2 and len(last_sl) >= 2:
-        # Sebelumnya downtrend (LH), lalu HH muncul
         if last_sh[-2][1] < last_sh[-3][1] if len(last_sh) >= 3 else True:
             if last_sh[-1][1] > last_sh[-2][1] and last_sl[-1][1] < last_sl[-2][1]:
                 structure = "CHoCH → Bullish"
                 bias = "BULLISH"
-        # Sebelumnya uptrend (HH), lalu LH muncul
         if last_sh[-2][1] > last_sh[-3][1] if len(last_sh) >= 3 else True:
             if last_sh[-1][1] < last_sh[-2][1] and last_sl[-1][1] > last_sl[-2][1]:
                 structure = "CHoCH → Bearish"
                 bias = "BEARISH"
 
-    # --- Break of recent swing (konfirmasi tambahan) ---
     recent_high = max([s[1] for s in sh[-4:]]) if len(sh) >= 2 else highs[-5]
     recent_low = min([s[1] for s in sl[-4:]]) if len(sl) >= 2 else lows[-5]
 
-    # Jika harga sudah break recent low → prioritaskan bearish
     if current < recent_low and bias != "BEARISH":
-        # Cek apakah sebelumnya ada uptrend
         if len(sh) >= 2 and sh[-1][1] < sh[-2][1]:
             structure = "CHoCH → Bearish (Break Low)"
             bias = "BEARISH"
@@ -192,7 +176,6 @@ def get_structure_bias(candles) -> Tuple[str, str]:
             structure = "BEARISH BOS (Break Low)"
             bias = "BEARISH"
 
-    # Jika harga sudah break recent high → prioritaskan bullish
     if current > recent_high and bias != "BULLISH":
         if len(sl) >= 2 and sl[-1][1] > sl[-2][1]:
             structure = "CHoCH → Bullish (Break High)"
@@ -201,7 +184,6 @@ def get_structure_bias(candles) -> Tuple[str, str]:
             structure = "BULLISH BOS (Break High)"
             bias = "BULLISH"
 
-    # --- Last resort: slope of last 8 closes ---
     if bias == "NEUTRAL" and len(closes) >= 8:
         slope = closes[-1] - closes[-8]
         if slope > atr_approx(candles) * 0.5:
@@ -239,17 +221,14 @@ def analyze_pure_smc(candles, htf_candles=None):
     atr = calculate_atr(candles)
     last_time = candles[-1]["datetime"]
 
-    # LTF Structure (improved)
     bias, structure = get_structure_bias(candles)
 
-    # HTF Bias (improved)
     htf_bias = "NEUTRAL"
     if htf_candles and len(htf_candles) >= 30:
         htf_bias, htf_structure = get_structure_bias(htf_candles)
     else:
         htf_structure = "N/A"
 
-    # Liquidity
     rh = np.max(highs[-15:-2]) if len(highs) > 15 else np.max(highs[:-1])
     rl = np.min(lows[-15:-2]) if len(lows) > 15 else np.min(lows[:-1])
     liq = "Protected"
@@ -262,7 +241,6 @@ def analyze_pure_smc(candles, htf_candles=None):
         if bias != "BEARISH":
             bias = "BULLISH"
 
-    # FVG
     fvg = "No Valid FVG"
     for i in range(len(candles) - 3, max(len(candles) - 10, 2), -1):
         if candles[i]["low"] > candles[i - 2]["high"]:
@@ -272,7 +250,6 @@ def analyze_pure_smc(candles, htf_candles=None):
             fvg = f"Bearish FVG [{candles[i]['high']:.5f}-{candles[i-2]['low']:.5f}]"
             break
 
-    # Order Block
     ob = "None"
     for i in range(len(candles) - 3, max(len(candles) - 25, 2), -1):
         if bias == "BULLISH" and candles[i]["close"] < candles[i]["open"]:
@@ -284,7 +261,6 @@ def analyze_pure_smc(candles, htf_candles=None):
                 ob = f"Bearish OB @ {candles[i]['low']:.5f}-{candles[i]['high']:.5f}"
                 break
 
-    # Entry Reason
     reasons = []
     if "BOS" in structure or "CHoCH" in structure or "Momentum" in structure:
         reasons.append(structure)
@@ -298,7 +274,6 @@ def analyze_pure_smc(candles, htf_candles=None):
         reasons.append(f"HTF {htf_bias}")
     entry_reason = " + ".join(reasons) if reasons else "No clear confluence"
 
-    # ========== CONFIDENCE SCORE ==========
     score_detail = {}
     score = 0
 
@@ -333,7 +308,6 @@ def analyze_pure_smc(candles, htf_candles=None):
     else:
         score_detail["liquidity"] = 0
 
-    # HTF Alignment
     if htf_bias == bias and bias != "NEUTRAL":
         score += 20
         score_detail["htf_alignment"] = 20
@@ -441,23 +415,17 @@ def analyze_fundamental_xau():
             "next_high_impact": next_ev["name"], "minutes_until_next": next_ev["minutes_left"],
             "upcoming_events": upcoming[:4]}
 
-# ==================== TRADE MANAGEMENT (v10.4 - HIGH ACCURACY) ====================
+# ==================== TRADE MANAGEMENT (v10.4.1 - Toleransi 0.6) ====================
 def manage_trades(symbol: str, current_price: float, price_data: dict = None):
     """
-    Deteksi fill yang sangat akurat:
-    - Menggunakan High/Low dari candle 1 menit (paling akurat yang tersedia)
-    - Juga memakai realtime bid/ask/mid dari biquote
-    - Bisa menangkap wick & spike
-    - MISS ENTRY hanya jika harga sudah bergerak jauh berlawanan
+    Deteksi fill akurat + toleransi 0.6 poin
+    untuk mengatasi perbedaan feed broker vs TwelveData/biquote
     """
     global trade_history
     changed = False
 
-    # Ambil candle 1 menit (TF terendah yang reliable dari TwelveData)
-    # outputsize=90 → ~1.5 jam data, cukup untuk monitoring pending order
     candles_1m = fetch_candles(symbol, "1min", outputsize=90, force=True)
 
-    # Realtime price components
     bid = current_price
     ask = current_price
     mid = current_price
@@ -476,36 +444,33 @@ def manage_trades(symbol: str, current_price: float, price_data: dict = None):
         is_buy = "BUY" in t["type"]
         atr_used = float(t.get("atr_used", 2.5))
 
-        # ==================== PENDING ENTRY ====================
         if t["status"] == "PENDING ENTRY":
             filled = False
             fill_price = mid
             max_high = mid
             min_low = mid
 
-            # 1. Cek dari candle 1 menit (paling akurat untuk wick)
+            buy_trigger = entry + FILL_TOLERANCE
+            sell_trigger = entry - FILL_TOLERANCE
+
             if candles_1m:
                 max_high = max(c["high"] for c in candles_1m)
                 min_low = min(c["low"] for c in candles_1m)
 
                 if is_buy:
-                    # BUY LIMIT → terisi jika Low menyentuh atau di bawah entry
-                    if min_low <= entry:
+                    if min_low <= buy_trigger:
                         filled = True
-                        # Fill price realistis: paling buruk = entry, atau lebih baik jika ada
                         fill_price = min(entry, mid)
                 else:
-                    # SELL LIMIT → terisi jika High menyentuh atau di atas entry
-                    if max_high >= entry:
+                    if max_high >= sell_trigger:
                         filled = True
                         fill_price = max(entry, mid)
 
-            # 2. Backup: cek realtime bid/ask (lebih cepat dari candle)
             if not filled:
-                if is_buy and (bid <= entry or mid <= entry):
+                if is_buy and (bid <= buy_trigger or mid <= buy_trigger):
                     filled = True
                     fill_price = min(entry, mid, bid)
-                elif not is_buy and (ask >= entry or mid >= entry):
+                elif not is_buy and (ask >= sell_trigger or mid >= sell_trigger):
                     filled = True
                     fill_price = max(entry, mid, ask)
 
@@ -516,14 +481,12 @@ def manage_trades(symbol: str, current_price: float, price_data: dict = None):
                 t["max_high_during_pending"] = str(round(max_high, 5))
                 t["min_low_during_pending"] = str(round(min_low, 5))
                 changed = True
-                logger.info(f"[FILL] {symbol} {t['type']} @ {fill_price:.5f} | High={max_high:.5f} Low={min_low:.5f}")
+                logger.info(f"[FILL] {symbol} {t['type']} @ {fill_price:.5f} | High={max_high:.5f} Low={min_low:.5f} (tol={FILL_TOLERANCE})")
 
             else:
-                # ===== MISS ENTRY (hanya jika sudah jauh bergerak berlawanan) =====
                 miss_threshold = atr_used * 1.8
 
                 if is_buy:
-                    # BUY LIMIT miss jika harga sudah naik jauh di atas entry
                     if mid >= entry + miss_threshold:
                         t["status"] = "CLOSED - MISS ENTRY"
                         t["close_price"] = str(round(mid, 5))
@@ -531,9 +494,8 @@ def manage_trades(symbol: str, current_price: float, price_data: dict = None):
                         t["max_high_during_pending"] = str(round(max_high, 5))
                         t["min_low_during_pending"] = str(round(min_low, 5))
                         changed = True
-                        logger.info(f"[MISS] {symbol} BUY LIMIT | price moved too far up ({mid:.5f})")
+                        logger.info(f"[MISS] {symbol} BUY LIMIT | price moved too far up")
                 else:
-                    # SELL LIMIT miss jika harga sudah turun jauh di bawah entry
                     if mid <= entry - miss_threshold:
                         t["status"] = "CLOSED - MISS ENTRY"
                         t["close_price"] = str(round(mid, 5))
@@ -541,15 +503,13 @@ def manage_trades(symbol: str, current_price: float, price_data: dict = None):
                         t["max_high_during_pending"] = str(round(max_high, 5))
                         t["min_low_during_pending"] = str(round(min_low, 5))
                         changed = True
-                        logger.info(f"[MISS] {symbol} SELL LIMIT | price moved too far down ({mid:.5f})")
+                        logger.info(f"[MISS] {symbol} SELL LIMIT | price moved too far down")
 
-        # ==================== FILLED & ACTIVE ====================
         elif t["status"] == "FILLED & ACTIVE":
             hit = None
             close_price = mid
 
             if candles_1m:
-                # Gunakan 20 candle terakhir (~20 menit) untuk deteksi SL/TP
                 recent = candles_1m[-20:] if len(candles_1m) >= 20 else candles_1m
                 recent_high = max(c["high"] for c in recent)
                 recent_low = min(c["low"] for c in recent)
@@ -569,7 +529,6 @@ def manage_trades(symbol: str, current_price: float, price_data: dict = None):
                         hit = "TP1 HIT"
                         close_price = tp1
             else:
-                # Fallback ke current price
                 if is_buy:
                     if mid <= sl:
                         hit = "SL HIT"
@@ -616,12 +575,10 @@ async def get_signal(symbol: str, timeframe: str = Query("5min"), custom_atr: Op
     if current_price > 0:
         candles[-1]["close"] = current_price
 
-    # HTF 1H dengan lebih banyak candle
     htf_candles = fetch_candles(decoded, "1h", outputsize=80, force=False)
 
     last_candle_time = candles[-1]["datetime"]
 
-    # Panggil manage_trades dengan price_data lengkap (bid/ask)
     manage_trades(decoded, current_price, price_data)
 
     active = next((t for t in trade_history if t["symbol"] == decoded and t["status"] in ["PENDING ENTRY", "FILLED & ACTIVE"]), None)
@@ -758,7 +715,7 @@ async def reset_history():
 
 @app.get("/api/health")
 async def health():
-    return {"status": "healthy", "version": "10.4", "trades": len(trade_history)}
+    return {"status": "healthy", "version": "10.4.1", "trades": len(trade_history)}
 
 if __name__ == "__main__":
     import uvicorn
