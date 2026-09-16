@@ -28,7 +28,6 @@
         <p class="text-xs text-slate-400">Institutional Order Flow · Real-time</p>
       </div>
     </div>
-
     <div class="flex items-center gap-3 flex-wrap">
       <input id="symbol" value="XAU/USD" class="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm w-28">
       <select id="timeframe" class="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm">
@@ -40,7 +39,6 @@
       <button onclick="fetchSignal(true)" class="bg-amber-600 hover:bg-amber-500 px-5 py-2 rounded-lg text-sm font-semibold">
         <i class="fas fa-bolt mr-1"></i> Analyze
       </button>
-
       <div class="flex items-center gap-2 bg-slate-800 border border-slate-700 rounded-lg px-3 py-2">
         <i class="fas fa-clock text-amber-400 text-sm"></i>
         <span class="text-xs text-slate-400">Refresh in</span>
@@ -55,7 +53,6 @@
 
   <div id="signal-card" class="hidden">
     <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
-      <!-- Decision -->
       <div id="decision-box" class="bg-slate-900 border border-slate-800 rounded-2xl p-6">
         <p class="text-xs text-slate-400 uppercase mb-2">Master Decision</p>
         <h2 id="action" class="text-2xl font-bold mb-1">—</h2>
@@ -70,7 +67,6 @@
         </div>
       </div>
 
-      <!-- Fundamental + Technical -->
       <div class="lg:col-span-2 space-y-4">
         <div id="fundamental-box" class="rounded-2xl p-5 border">
           <div class="flex justify-between gap-4">
@@ -120,18 +116,17 @@
       </div>
     </div>
 
-    <!-- Entry Reason (Badge Style) -->
+    <!-- Entry Reason — versi jelas -->
     <div id="reason-card" class="mt-4 bg-slate-900/70 border border-slate-800 rounded-xl p-5">
       <p class="text-xs text-slate-500 mb-3 flex items-center gap-2">
-        <i class="fas fa-lightbulb text-amber-400"></i> Entry Reason (Confluence)
+        <i class="fas fa-lightbulb text-amber-400"></i> Alasan Entry (Penjelasan)
       </p>
-      <div id="entry-reason" class="flex flex-wrap gap-2">
-        <span class="text-sm text-slate-400">—</span>
-      </div>
+      <div id="entry-reason-summary" class="text-sm text-slate-200 leading-relaxed mb-3">—</div>
+      <div id="entry-reason-badges" class="flex flex-wrap gap-2"></div>
+      <p id="entry-reason-warning" class="hidden mt-3 text-xs text-amber-400/90 bg-amber-950/40 border border-amber-800/50 rounded-lg px-3 py-2"></p>
     </div>
   </div>
 
-  <!-- Execution -->
   <div id="exec-card" class="hidden bg-slate-900 border border-slate-800 rounded-2xl p-6">
     <h3 class="text-sm font-semibold mb-4">
       <i class="fas fa-sliders-h text-amber-400 mr-2"></i>Execution Parameters
@@ -177,7 +172,6 @@
     <p id="rationale" class="text-sm text-slate-300">—</p>
   </div>
 
-  <!-- History -->
   <div class="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden">
     <div class="px-6 py-4 border-b border-slate-800 flex justify-between items-center">
       <h3 class="font-semibold"><i class="fas fa-history mr-2 text-slate-400"></i>Trade History</h3>
@@ -213,16 +207,110 @@
   let countdownTimer = null;
   let secondsLeft = REFRESH_INTERVAL;
 
+  function roundPrice(str) {
+    const n = parseFloat(str);
+    if (isNaN(n)) return str;
+    return n.toFixed(2);
+  }
+
+  function explainReason(tech, data) {
+    const bias = (tech.institutional_bias || "").toUpperCase();
+    const htf = (tech.htf_bias || "").toUpperCase();
+    const structure = tech.bos_choch || data.market_structure || "";
+    const ob = tech.order_block || "";
+    const fvg = tech.fair_value_gap || "";
+    const liq = tech.liquidity_pool || "";
+    const raw = tech.entry_reason || "";
+
+    const lines = [];
+    let direction = "Netral / menunggu";
+    if (bias === "BULLISH") direction = "BULLISH (cenderung naik) — setup beli";
+    if (bias === "BEARISH") direction = "BEARISH (cenderung turun) — setup jual";
+    lines.push(`<strong>Arah timeframe kecil:</strong> ${direction}`);
+
+    if (structure && structure !== "—" && !structure.includes("Trade Active")) {
+      let s = structure;
+      if (s.includes("BOS") && s.includes("BEARISH")) s = "Struktur turun (Break of Structure: puncak & lembah lebih rendah)";
+      else if (s.includes("BOS") && s.includes("BULLISH")) s = "Struktur naik (Break of Structure: puncak & lembah lebih tinggi)";
+      else if (s.includes("CHoCH") && s.toLowerCase().includes("bear")) s = "Perubahan karakter ke turun (CHoCH bearish)";
+      else if (s.includes("CHoCH") && s.toLowerCase().includes("bull")) s = "Perubahan karakter ke naik (CHoCH bullish)";
+      lines.push(`<strong>Struktur:</strong> ${s}`);
+    }
+
+    if (ob && ob !== "None" && ob !== "—") {
+      const m = ob.match(/([\d.]+)\s*-\s*([\d.]+)/);
+      const zone = m ? `${roundPrice(m[1])} – ${roundPrice(m[2])}` : ob;
+      if (ob.toLowerCase().includes("bearish"))
+        lines.push(`<strong>Zona entry jual:</strong> Order Block di area ${zone}`);
+      else if (ob.toLowerCase().includes("bullish"))
+        lines.push(`<strong>Zona entry beli:</strong> Order Block di area ${zone}`);
+      else
+        lines.push(`<strong>Order Block:</strong> ${zone}`);
+    }
+
+    if (fvg && !fvg.includes("No Valid") && fvg !== "—") {
+      const m = fvg.match(/([\d.]+)\s*-\s*([\d.]+)/);
+      const zone = m ? `${roundPrice(m[1])} – ${roundPrice(m[2])}` : fvg;
+      if (fvg.toLowerCase().includes("bearish"))
+        lines.push(`<strong>Gap jual (FVG):</strong> area ${zone}`);
+      else if (fvg.toLowerCase().includes("bullish"))
+        lines.push(`<strong>Gap beli (FVG):</strong> area ${zone}`);
+    }
+
+    if (liq && liq.includes("Swept")) {
+      lines.push(`<strong>Likuiditas:</strong> sudah tersapu (${liq}) — sering jadi konfirmasi arah`);
+    }
+
+    if (htf && htf !== "NEUTRAL" && htf !== "—") {
+      lines.push(`<strong>Timeframe 1 jam (HTF):</strong> ${htf === "BULLISH" ? "masih naik" : "masih turun"}`);
+    }
+
+    // Kesimpulan
+    let conclusion = "";
+    let warning = "";
+    if (bias === "BEARISH" && htf === "BULLISH") {
+      conclusion = "Ada setup SELL di timeframe kecil, tetapi timeframe 1 jam masih naik.";
+      warning = "⚠️ Confluence belum penuh — HTF berlawanan. Lebih aman tunggu konfirmasi atau kecilkan risiko.";
+    } else if (bias === "BULLISH" && htf === "BEARISH") {
+      conclusion = "Ada setup BUY di timeframe kecil, tetapi timeframe 1 jam masih turun.";
+      warning = "⚠️ Confluence belum penuh — HTF berlawanan. Lebih aman tunggu konfirmasi atau kecilkan risiko.";
+    } else if (bias === "BEARISH" && (htf === "BEARISH" || htf === "NEUTRAL" || !htf)) {
+      conclusion = "Setup SELL relatif sejalan. Perhatikan zona entry dan SL.";
+    } else if (bias === "BULLISH" && (htf === "BULLISH" || htf === "NEUTRAL" || !htf)) {
+      conclusion = "Setup BUY relatif sejalan. Perhatikan zona entry dan SL.";
+    } else {
+      conclusion = "Belum ada setup jelas — tunggu struktur lebih bersih.";
+    }
+    lines.push(`<strong class="text-amber-300">Kesimpulan:</strong> ${conclusion}`);
+
+    return { html: lines.map(l => `<div class="mb-1">${l}</div>`).join(""), warning, raw };
+  }
+
+  function renderBadges(raw) {
+    if (!raw || raw === "—" || raw === "No clear confluence") return "";
+    const parts = raw.split("+").map(p => p.trim()).filter(Boolean);
+    return parts.map(part => {
+      let color = "bg-slate-700 text-slate-200";
+      const lower = part.toLowerCase();
+      if (lower.includes("bos") || lower.includes("choch")) color = "bg-blue-900/60 text-blue-300 border border-blue-700/50";
+      else if (lower.includes("ob")) color = "bg-amber-900/50 text-amber-300 border border-amber-700/50";
+      else if (lower.includes("fvg")) color = "bg-purple-900/50 text-purple-300 border border-purple-700/50";
+      else if (lower.includes("swept") || lower.includes("liquidity")) color = "bg-emerald-900/50 text-emerald-300 border border-emerald-700/50";
+      else if (lower.includes("htf")) color = "bg-slate-700 text-slate-300 border border-slate-600";
+      // pendekkan angka panjang di badge
+      let label = part.replace(/(\d+\.\d{2})\d+/g, "$1");
+      return `<span class="px-2.5 py-1 rounded-lg text-xs font-medium ${color}">${label}</span>`;
+    }).join("");
+  }
+
   async function fetchSignal(manual = false) {
     const symbol = document.getElementById("symbol").value.trim() || "XAU/USD";
     const tf = document.getElementById("timeframe").value;
     const statusEl = document.getElementById("status");
-
     if (manual) {
       statusEl.classList.remove("hidden");
       statusEl.innerHTML = `<i class="fas fa-spinner fa-spin mr-2"></i> Analyzing...`;
     }
-
     try {
       const res = await fetch(`${API_BASE}/api/max-intelligence-signal/${encodeURIComponent(symbol)}?timeframe=${tf}`);
       if (!res.ok) throw new Error("API error " + res.status);
@@ -233,6 +321,7 @@
       resetCountdown();
     } catch (err) {
       statusEl.innerHTML = `<span class="text-red-400">${err.message}</span>`;
+      statusEl.classList.remove("hidden");
     }
   }
 
@@ -265,33 +354,20 @@
     const bias = tech.institutional_bias || "NEUTRAL";
     document.getElementById("bias").textContent = bias;
     document.getElementById("bias").className = bias === "BULLISH" ? "text-sm font-semibold text-emerald-400" :
-                                                 bias === "BEARISH" ? "text-sm font-semibold text-red-400" : "text-sm font-semibold";
+      bias === "BEARISH" ? "text-sm font-semibold text-red-400" : "text-sm font-semibold";
 
-    // ===== Entry Reason sebagai Badge =====
-    const reasonRaw = tech.entry_reason || data.execution_parameters?.entry_reason || "";
-    const reasonEl = document.getElementById("entry-reason");
-
-    if (!reasonRaw || reasonRaw === "—" || reasonRaw === "No clear confluence") {
-      reasonEl.innerHTML = `<span class="text-sm text-slate-400">—</span>`;
+    // Penjelasan Entry Reason
+    const explained = explainReason(tech, data);
+    document.getElementById("entry-reason-summary").innerHTML = explained.html;
+    document.getElementById("entry-reason-badges").innerHTML = renderBadges(tech.entry_reason || explained.raw);
+    const warnEl = document.getElementById("entry-reason-warning");
+    if (explained.warning) {
+      warnEl.textContent = explained.warning;
+      warnEl.classList.remove("hidden");
     } else {
-      const parts = reasonRaw.split("+").map(p => p.trim()).filter(p => p);
-      reasonEl.innerHTML = parts.map(part => {
-        let color = "bg-slate-700 text-slate-200";
-        const lower = part.toLowerCase();
-        if (lower.includes("bos") || lower.includes("choch")) {
-          color = "bg-blue-900/60 text-blue-300 border border-blue-700/50";
-        } else if (lower.includes("ob")) {
-          color = "bg-amber-900/50 text-amber-300 border border-amber-700/50";
-        } else if (lower.includes("fvg")) {
-          color = "bg-purple-900/50 text-purple-300 border border-purple-700/50";
-        } else if (lower.includes("swept") || lower.includes("liquidity")) {
-          color = "bg-emerald-900/50 text-emerald-300 border border-emerald-700/50";
-        }
-        return `<span class="px-3 py-1.5 rounded-lg text-xs font-medium ${color}">${part}</span>`;
-      }).join("");
+      warnEl.classList.add("hidden");
     }
 
-    // Fundamental
     const fund = data.fundamental_layer || {};
     document.getElementById("fund-status").textContent = fund.scalping_status || "—";
     document.getElementById("fund-recommendation").textContent = fund.recommendation || "—";
@@ -303,15 +379,14 @@
     const riskBadge = document.getElementById("risk-badge");
     fundBox.className = "rounded-2xl p-5 border ";
     riskBadge.className = "px-3 py-1 rounded-lg text-xs font-bold ";
-
     if (risk === "EXTREME") {
       fundBox.classList.add("bg-red-950/40", "border-red-700", "glow-danger");
       riskBadge.classList.add("bg-red-600", "text-white");
       riskBadge.textContent = "EXTREME";
-    } else if (risk === "HIGH") {
+    } else if (risk === "HIGH" || risk === "MEDIUM") {
       fundBox.classList.add("bg-yellow-950/30", "border-yellow-600", "glow-caution");
       riskBadge.classList.add("bg-yellow-500", "text-black");
-      riskBadge.textContent = "HIGH";
+      riskBadge.textContent = risk;
     } else {
       fundBox.classList.add("bg-emerald-950/20", "border-emerald-800");
       riskBadge.classList.add("bg-emerald-700", "text-white");
@@ -341,19 +416,16 @@
       const res = await fetch(`${API_BASE}/api/trade-history`);
       const data = await res.json();
       const tbody = document.getElementById("history-body");
-
       if (!data.history || data.history.length === 0) {
         tbody.innerHTML = `<tr><td colspan="9" class="px-4 py-8 text-center text-slate-500">Belum ada trade</td></tr>`;
         return;
       }
-
       tbody.innerHTML = data.history.map(t => {
         let statusClass = "bg-slate-800";
         if (t.status === "PENDING ENTRY") statusClass = "bg-blue-700";
         else if (t.status === "FILLED & ACTIVE") statusClass = "bg-emerald-700";
         else if ((t.status || "").includes("MISS ENTRY")) statusClass = "bg-orange-600";
         else if ((t.status || "").includes("CLOSED")) statusClass = "bg-slate-600";
-
         return `
         <tr class="hover:bg-slate-800/40">
           <td class="px-4 py-3">${t.id}</td>
@@ -364,11 +436,9 @@
           <td class="px-4 py-3 font-mono text-red-400">${t.sl}</td>
           <td class="px-4 py-3 font-mono text-emerald-400">${t.tp1}</td>
           <td class="px-4 py-3 font-mono">${t.close_price || "-"}</td>
-          <td class="px-4 py-3">
-            <span class="text-xs px-2 py-1 rounded ${statusClass}">${t.status}</span>
-          </td>
-        </tr>
-      `}).join("");
+          <td class="px-4 py-3"><span class="text-xs px-2 py-1 rounded ${statusClass}">${t.status}</span></td>
+        </tr>`;
+      }).join("");
     } catch (e) {
       console.error(e);
     }
