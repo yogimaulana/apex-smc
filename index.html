@@ -116,10 +116,9 @@
       </div>
     </div>
 
-    <!-- Entry Reason — versi jelas -->
     <div id="reason-card" class="mt-4 bg-slate-900/70 border border-slate-800 rounded-xl p-5">
       <p class="text-xs text-slate-500 mb-3 flex items-center gap-2">
-        <i class="fas fa-lightbulb text-amber-400"></i> Alasan Entry (Penjelasan)
+        <i class="fas fa-lightbulb text-amber-400"></i> Alasan Entry
       </p>
       <div id="entry-reason-summary" class="text-sm text-slate-200 leading-relaxed mb-3">—</div>
       <div id="entry-reason-badges" class="flex flex-wrap gap-2"></div>
@@ -220,70 +219,57 @@
     const ob = tech.order_block || "";
     const fvg = tech.fair_value_gap || "";
     const liq = tech.liquidity_pool || "";
-    const raw = tech.entry_reason || "";
 
     const lines = [];
-    let direction = "Netral / menunggu";
-    if (bias === "BULLISH") direction = "BULLISH (cenderung naik) — setup beli";
-    if (bias === "BEARISH") direction = "BEARISH (cenderung turun) — setup jual";
-    lines.push(`<strong>Arah timeframe kecil:</strong> ${direction}`);
+
+    if (bias === "BULLISH") lines.push(`<strong>Arah:</strong> BULLISH`);
+    else if (bias === "BEARISH") lines.push(`<strong>Arah:</strong> BEARISH`);
+    else lines.push(`<strong>Arah:</strong> Netral`);
 
     if (structure && structure !== "—" && !structure.includes("Trade Active")) {
-      let s = structure;
-      if (s.includes("BOS") && s.includes("BEARISH")) s = "Struktur turun (Break of Structure: puncak & lembah lebih rendah)";
-      else if (s.includes("BOS") && s.includes("BULLISH")) s = "Struktur naik (Break of Structure: puncak & lembah lebih tinggi)";
-      else if (s.includes("CHoCH") && s.toLowerCase().includes("bear")) s = "Perubahan karakter ke turun (CHoCH bearish)";
-      else if (s.includes("CHoCH") && s.toLowerCase().includes("bull")) s = "Perubahan karakter ke naik (CHoCH bullish)";
-      lines.push(`<strong>Struktur:</strong> ${s}`);
+      lines.push(`<strong>Struktur:</strong> ${structure}`);
     }
 
     if (ob && ob !== "None" && ob !== "—") {
       const m = ob.match(/([\d.]+)\s*-\s*([\d.]+)/);
       const zone = m ? `${roundPrice(m[1])} – ${roundPrice(m[2])}` : ob;
-      if (ob.toLowerCase().includes("bearish"))
-        lines.push(`<strong>Zona entry jual:</strong> Order Block di area ${zone}`);
-      else if (ob.toLowerCase().includes("bullish"))
-        lines.push(`<strong>Zona entry beli:</strong> Order Block di area ${zone}`);
-      else
-        lines.push(`<strong>Order Block:</strong> ${zone}`);
+      lines.push(`<strong>Order Block:</strong> ${zone}`);
     }
 
     if (fvg && !fvg.includes("No Valid") && fvg !== "—") {
       const m = fvg.match(/([\d.]+)\s*-\s*([\d.]+)/);
       const zone = m ? `${roundPrice(m[1])} – ${roundPrice(m[2])}` : fvg;
-      if (fvg.toLowerCase().includes("bearish"))
-        lines.push(`<strong>Gap jual (FVG):</strong> area ${zone}`);
-      else if (fvg.toLowerCase().includes("bullish"))
-        lines.push(`<strong>Gap beli (FVG):</strong> area ${zone}`);
+      lines.push(`<strong>FVG:</strong> ${zone}`);
     }
 
     if (liq && liq.includes("Swept")) {
-      lines.push(`<strong>Likuiditas:</strong> sudah tersapu (${liq}) — sering jadi konfirmasi arah`);
+      lines.push(`<strong>Likuiditas:</strong> ${liq}`);
     }
 
     if (htf && htf !== "NEUTRAL" && htf !== "—") {
-      lines.push(`<strong>Timeframe 1 jam (HTF):</strong> ${htf === "BULLISH" ? "masih naik" : "masih turun"}`);
+      lines.push(`<strong>HTF (1H):</strong> ${htf}`);
     }
 
-    // Kesimpulan
-    let conclusion = "";
     let warning = "";
     if (bias === "BEARISH" && htf === "BULLISH") {
-      conclusion = "Ada setup SELL di timeframe kecil, tetapi timeframe 1 jam masih naik.";
-      warning = "⚠️ Confluence belum penuh — HTF berlawanan. Lebih aman tunggu konfirmasi atau kecilkan risiko.";
+      lines.push(`<strong class="text-amber-300">Kesimpulan:</strong> Setup SELL, HTF masih naik`);
+      warning = "⚠️ HTF berlawanan — hati-hati";
     } else if (bias === "BULLISH" && htf === "BEARISH") {
-      conclusion = "Ada setup BUY di timeframe kecil, tetapi timeframe 1 jam masih turun.";
-      warning = "⚠️ Confluence belum penuh — HTF berlawanan. Lebih aman tunggu konfirmasi atau kecilkan risiko.";
-    } else if (bias === "BEARISH" && (htf === "BEARISH" || htf === "NEUTRAL" || !htf)) {
-      conclusion = "Setup SELL relatif sejalan. Perhatikan zona entry dan SL.";
-    } else if (bias === "BULLISH" && (htf === "BULLISH" || htf === "NEUTRAL" || !htf)) {
-      conclusion = "Setup BUY relatif sejalan. Perhatikan zona entry dan SL.";
+      lines.push(`<strong class="text-amber-300">Kesimpulan:</strong> Setup BUY, HTF masih turun`);
+      warning = "⚠️ HTF berlawanan — hati-hati";
+    } else if (bias === "BEARISH") {
+      lines.push(`<strong class="text-amber-300">Kesimpulan:</strong> Setup SELL`);
+    } else if (bias === "BULLISH") {
+      lines.push(`<strong class="text-amber-300">Kesimpulan:</strong> Setup BUY`);
     } else {
-      conclusion = "Belum ada setup jelas — tunggu struktur lebih bersih.";
+      lines.push(`<strong class="text-amber-300">Kesimpulan:</strong> Tunggu setup lebih jelas`);
     }
-    lines.push(`<strong class="text-amber-300">Kesimpulan:</strong> ${conclusion}`);
 
-    return { html: lines.map(l => `<div class="mb-1">${l}</div>`).join(""), warning, raw };
+    return {
+      html: lines.map(l => `<div class="mb-1">${l}</div>`).join(""),
+      warning,
+      raw: tech.entry_reason || ""
+    };
   }
 
   function renderBadges(raw) {
@@ -297,7 +283,6 @@
       else if (lower.includes("fvg")) color = "bg-purple-900/50 text-purple-300 border border-purple-700/50";
       else if (lower.includes("swept") || lower.includes("liquidity")) color = "bg-emerald-900/50 text-emerald-300 border border-emerald-700/50";
       else if (lower.includes("htf")) color = "bg-slate-700 text-slate-300 border border-slate-600";
-      // pendekkan angka panjang di badge
       let label = part.replace(/(\d+\.\d{2})\d+/g, "$1");
       return `<span class="px-2.5 py-1 rounded-lg text-xs font-medium ${color}">${label}</span>`;
     }).join("");
@@ -356,7 +341,6 @@
     document.getElementById("bias").className = bias === "BULLISH" ? "text-sm font-semibold text-emerald-400" :
       bias === "BEARISH" ? "text-sm font-semibold text-red-400" : "text-sm font-semibold";
 
-    // Penjelasan Entry Reason
     const explained = explainReason(tech, data);
     document.getElementById("entry-reason-summary").innerHTML = explained.html;
     document.getElementById("entry-reason-badges").innerHTML = renderBadges(tech.entry_reason || explained.raw);
