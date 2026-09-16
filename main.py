@@ -1,5 +1,5 @@
-# main.py - Apex SMC Intelligence v11.2
-# Anti-duplikat + self-learning + handling 503 lebih aman
+# main.py - Apex SMC Intelligence v11.3
+# Filter news: blok hanya jika <= 60 menit | Self-learning | Anti-duplikat
 
 from fastapi import FastAPI, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -7,11 +7,12 @@ from datetime import datetime, timezone
 import time, os, json, requests, numpy as np
 from typing import List, Dict, Optional, Tuple
 import logging
+import urllib.parse
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("SMC-Engine")
 
-app = FastAPI(title="Apex SMC Intelligence", version="11.2")
+app = FastAPI(title="Apex SMC Intelligence", version="11.3")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 TWELVE_DATA_API_KEY = os.getenv("TWELVE_DATA_API_KEY", "ed06e6d76c6e42d88fdf510856d9b900")
@@ -27,15 +28,9 @@ price_cache = {}
 fundamental_cache = {"data": None, "time": 0}
 trade_history: List[Dict] = []
 learning_stats: Dict = {
-    "total_closed": 0,
-    "tp_hits": 0,
-    "sl_hits": 0,
-    "miss_entries": 0,
-    "score_adjust": 0,
-    "by_pattern": {},
-    "recent_results": [],
-    "blocked_patterns": {},
-    "last_update": None
+    "total_closed": 0, "tp_hits": 0, "sl_hits": 0, "miss_entries": 0,
+    "score_adjust": 0, "by_pattern": {}, "recent_results": [],
+    "blocked_patterns": {}, "last_update": None
 }
 
 def norm_symbol(s: str) -> str:
@@ -62,8 +57,7 @@ def load_learning():
     try:
         if os.path.exists(LEARNING_FILE):
             with open(LEARNING_FILE, "r") as f:
-                data = json.load(f)
-                learning_stats.update(data)
+                learning_stats.update(json.load(f))
     except:
         pass
 
@@ -90,14 +84,12 @@ def fetch_realtime_price(symbol: str) -> Dict:
         data = r.json()
         if "mid" in data:
             result = {
-                "symbol": clean,
-                "price": float(data["mid"]),
+                "symbol": clean, "price": float(data["mid"]),
                 "bid": float(data.get("bid", data["mid"])),
                 "ask": float(data.get("ask", data["mid"])),
                 "spread": float(data.get("spread", 0)),
                 "timestamp": data.get("timestamp") or data.get("lastQuoteAt"),
-                "source": data.get("source", "biquote-MT5"),
-                "stale": data.get("stale", False)
+                "source": data.get("source", "biquote-MT5"), "stale": data.get("stale", False)
             }
             price_cache[key] = {"time": now, "data": result}
             return result
@@ -106,14 +98,10 @@ def fetch_realtime_price(symbol: str) -> Dict:
     candles = fetch_candles(symbol, "1min", 5, force=False)
     if candles:
         result = {
-            "symbol": norm_symbol(symbol),
-            "price": candles[-1]["close"],
-            "bid": candles[-1]["close"],
-            "ask": candles[-1]["close"],
-            "spread": 0,
-            "timestamp": candles[-1]["datetime"],
-            "source": "candle_fallback",
-            "stale": True
+            "symbol": norm_symbol(symbol), "price": candles[-1]["close"],
+            "bid": candles[-1]["close"], "ask": candles[-1]["close"],
+            "spread": 0, "timestamp": candles[-1]["datetime"],
+            "source": "candle_fallback", "stale": True
         }
         price_cache[key] = {"time": now, "data": result}
         return result
@@ -124,7 +112,6 @@ def fetch_realtime_price(symbol: str) -> Dict:
 # ==================== CANDLES ====================
 def fetch_candles(symbol: str, interval: str = "5min", outputsize: int = 100, force: bool = False) -> List[Dict]:
     sym = norm_symbol(symbol)
-    # Twelve Data sering pakai XAU/USD
     td_symbol = "XAU/USD" if sym in ("XAUUSD", "XAU/USD", "GOLD") else sym
     key = f"{sym}_{interval}"
     now = time.time()
@@ -138,16 +125,11 @@ def fetch_candles(symbol: str, interval: str = "5min", outputsize: int = 100, fo
         r = requests.get(url, timeout=10)
         data = r.json()
         if "values" not in data:
-            logger.warning(f"Twelve Data no values: {data}")
-            # fallback cache lama
+            logger.warning(f"Twelve Data no values: {str(data)[:200]}")
             return cache_store.get(key, {}).get("data", [])
         candles = [{
-            "datetime": c["datetime"],
-            "open": float(c["open"]),
-            "high": float(c["high"]),
-            "low": float(c["low"]),
-            "close": float(c["close"]),
-            "volume": float(c.get("volume") or 0)
+            "datetime": c["datetime"], "open": float(c["open"]), "high": float(c["high"]),
+            "low": float(c["low"]), "close": float(c["close"]), "volume": float(c.get("volume") or 0)
         } for c in reversed(data["values"])]
         cache_store[key] = {"time": now, "data": candles}
         return candles
@@ -230,7 +212,6 @@ def record_trade_result(trade: Dict):
     global learning_stats
     status = trade.get("status", "")
     pattern = trade.get("pattern_key", "UNKNOWN")
-
     learning_stats["total_closed"] = learning_stats.get("total_closed", 0) + 1
     if "by_pattern" not in learning_stats:
         learning_stats["by_pattern"] = {}
@@ -256,11 +237,7 @@ def record_trade_result(trade: Dict):
         return
 
     recent = learning_stats.get("recent_results", [])
-    recent.insert(0, {
-        "pattern": pattern,
-        "result": result,
-        "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    })
+    recent.insert(0, {"pattern": pattern, "result": result, "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
     learning_stats["recent_results"] = recent[:20]
 
     pstats = learning_stats["by_pattern"][pattern]
@@ -268,7 +245,6 @@ def record_trade_result(trade: Dict):
         last_two = [r for r in recent if r["pattern"] == pattern][:2]
         if len(last_two) >= 2 and all(r["result"] == "SL" for r in last_two):
             learning_stats.setdefault("blocked_patterns", {})[pattern] = 3
-            logger.info(f"Pattern blocked: {pattern}")
 
     blocked = learning_stats.get("blocked_patterns", {})
     for k in list(blocked.keys()):
@@ -285,7 +261,6 @@ def record_trade_result(trade: Dict):
             learning_stats["score_adjust"] = min(6, learning_stats.get("score_adjust", 0) + 1)
         elif wr <= 0.42:
             learning_stats["score_adjust"] = max(-6, learning_stats.get("score_adjust", 0) - 1)
-
     save_learning()
 
 def apply_learning_to_score(base_score: int, pattern_key: str) -> Tuple[int, str]:
@@ -308,8 +283,7 @@ def apply_learning_to_score(base_score: int, pattern_key: str) -> Tuple[int, str
             if p["sl"] >= 3 and p["tp"] == 0:
                 score -= 15
                 notes.append("pattern_all_sl")
-    score = max(0, min(98, int(score)))
-    return score, ",".join(notes) if notes else "neutral"
+    return max(0, min(98, int(score))), (",".join(notes) if notes else "neutral")
 
 def get_dynamic_min_score() -> int:
     adj = int(learning_stats.get("score_adjust", 0))
@@ -321,8 +295,7 @@ def is_same_entry_zone(symbol: str, new_entry: float, atr: float) -> bool:
         if norm_symbol(t.get("symbol", "")) != sym:
             continue
         try:
-            old_entry = float(t["entry"])
-            if abs(new_entry - old_entry) < (atr * ENTRY_ZONE_ATR_FACTOR):
+            if abs(new_entry - float(t["entry"])) < (atr * ENTRY_ZONE_ATR_FACTOR):
                 return True
         except:
             continue
@@ -337,7 +310,7 @@ def get_active_trade(symbol: str) -> Optional[Dict]:
         None
     )
 
-# ==================== SMC ANALYSIS ====================
+# ==================== SMC ====================
 def analyze_pure_smc(candles, htf_candles=None):
     if len(candles) < 30:
         return {
@@ -484,7 +457,7 @@ def analyze_pure_smc(candles, htf_candles=None):
         "learn_note": learn_note
     }
 
-# ==================== FUNDAMENTAL ====================
+# ==================== FUNDAMENTAL (blok hanya <= 60 menit) ====================
 def fetch_high_impact():
     now = time.time()
     if fundamental_cache["data"] and (now - fundamental_cache["time"]) < FUND_CACHE_TTL:
@@ -520,26 +493,32 @@ def analyze_fundamental_xau():
                     min_m, next_ev = mins, info
         except:
             continue
+
     if not next_ev:
         return {
             "scalping_status": "SAFE FOR SCALPING", "risk_level": "LOW",
             "recommendation": "Tidak ada High Impact. Scalping aman.",
             "next_high_impact": "None", "minutes_until_next": None, "upcoming_events": []
         }
-    if next_ev["minutes_left"] <= 90:
+
+    # BLOK HANYA jika sisa <= 60 menit (di bawah 1 jam)
+    if next_ev["minutes_left"] <= 60:
         return {
             "scalping_status": "DANGER - HIGH IMPACT SOON", "risk_level": "EXTREME",
             "recommendation": f"HINDARI SCALPING! {next_ev['name']} dalam {next_ev['minutes_left']} menit.",
             "next_high_impact": next_ev["name"], "minutes_until_next": next_ev["minutes_left"],
             "upcoming_events": upcoming[:4]
         }
-    if next_ev["minutes_left"] <= 240:
+
+    # > 1 jam: BOLEH sinyal (hati-hati jika < 2 jam)
+    if next_ev["minutes_left"] <= 120:
         return {
-            "scalping_status": "CAUTION - HIGH IMPACT COMING", "risk_level": "HIGH",
-            "recommendation": f"Hati-hati. {next_ev['name']} dalam {round(next_ev['minutes_left']/60, 1)} jam.",
+            "scalping_status": "CAUTION - NEWS WITHIN 2H", "risk_level": "MEDIUM",
+            "recommendation": f"Hati-hati. {next_ev['name']} dalam {round(next_ev['minutes_left']/60, 1)} jam. Sinyal masih boleh.",
             "next_high_impact": next_ev["name"], "minutes_until_next": next_ev["minutes_left"],
             "upcoming_events": upcoming[:4]
         }
+
     return {
         "scalping_status": "SAFE FOR SCALPING", "risk_level": "LOW",
         "recommendation": f"Aman. Next event masih {round(next_ev['minutes_left']/60, 1)} jam lagi.",
@@ -547,7 +526,7 @@ def analyze_fundamental_xau():
         "upcoming_events": upcoming[:4]
     }
 
-# ==================== TRADE MANAGEMENT ====================
+# ==================== TRADE MGMT ====================
 def manage_trades(symbol: str, current_price: float):
     global trade_history
     changed = False
@@ -555,9 +534,7 @@ def manage_trades(symbol: str, current_price: float):
     for t in trade_history:
         if norm_symbol(t.get("symbol", "")) != sym:
             continue
-        entry = float(t["entry"])
-        sl = float(t["sl"])
-        tp1 = float(t["tp1"])
+        entry, sl, tp1 = float(t["entry"]), float(t["sl"]), float(t["tp1"])
         is_buy = "BUY" in t["type"]
 
         if t["status"] == "PENDING ENTRY":
@@ -615,15 +592,11 @@ async def get_signal(
     price_data = fetch_realtime_price(decoded)
     current_price = price_data["price"]
 
-    # Ambil candle: force dulu, kalau gagal pakai cache
     candles = fetch_candles(decoded, timeframe, force=True)
     if not candles:
         candles = fetch_candles(decoded, timeframe, force=False)
     if not candles:
-        raise HTTPException(
-            status_code=503,
-            detail="Market data unavailable (Twelve Data limit/error). Coba lagi 30-60 detik."
-        )
+        raise HTTPException(503, detail="Market data unavailable. Coba lagi 30-60 detik.")
 
     if current_price > 0:
         candles[-1]["close"] = current_price
@@ -636,13 +609,11 @@ async def get_signal(
     if active:
         fund = analyze_fundamental_xau()
         return {
-            "symbol": decoded,
-            "timeframe": timeframe,
+            "symbol": decoded, "timeframe": timeframe,
             "market_structure": f"Trade Active: {active['status']}",
             "technical_layer": {
                 "order_block": active.get("order_block", "-"),
-                "fair_value_gap": "-",
-                "liquidity_pool": "-",
+                "fair_value_gap": "-", "liquidity_pool": "-",
                 "institutional_bias": "HOLD" if active["status"] == "FILLED & ACTIVE" else "WAITING ENTRY",
                 "entry_reason": active.get("entry_reason", "-"),
                 "htf_bias": active.get("htf_bias", "-"),
@@ -656,12 +627,9 @@ async def get_signal(
                 "execution_status": active["status"]
             },
             "execution_parameters": {
-                "entry_price": active["entry"],
-                "stop_loss": active["sl"],
-                "take_profit_1": active["tp1"],
-                "take_profit_2": active["tp2"],
-                "risk_to_reward_ratio": active["rrr"],
-                "atr_used": active.get("atr_used", "-"),
+                "entry_price": active["entry"], "stop_loss": active["sl"],
+                "take_profit_1": active["tp1"], "take_profit_2": active["tp2"],
+                "risk_to_reward_ratio": active["rrr"], "atr_used": active.get("atr_used", "-"),
                 "current_price": str(round(current_price, 5)),
                 "price_source": price_data.get("source", "-"),
                 "last_candle_time": last_candle_time,
@@ -687,7 +655,8 @@ async def get_signal(
     entry = sl = tp1 = tp2 = "-"
     rrr = "0.0"
 
-    if fund["risk_level"] in ["EXTREME", "HIGH"]:
+    # Hanya EXTREME yang blok (sisa news <= 60 menit)
+    if fund["risk_level"] == "EXTREME":
         action = "WAIT - HIGH IMPACT NEWS RISK"
         status = "BLOCKED BY FUNDAMENTAL"
         confidence = max(20, confidence - 30)
@@ -723,12 +692,10 @@ async def get_signal(
         new_trade = {
             "id": len(trade_history) + 1,
             "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "symbol": decoded,
-            "type": action,
+            "symbol": decoded, "type": action,
             "entry": str(entry), "sl": str(sl), "tp1": str(tp1), "tp2": str(tp2),
             "rrr": rrr, "status": status, "atr_used": atr_val,
-            "order_block": smc["order_block"],
-            "entry_reason": smc["entry_reason"],
+            "order_block": smc["order_block"], "entry_reason": smc["entry_reason"],
             "bias": smc["bias"], "htf_bias": smc["htf_bias"],
             "score": smc["score"], "score_label": smc["score_label"],
             "confluence_quality": smc["confluence_quality"],
@@ -738,20 +705,14 @@ async def get_signal(
         save_history()
 
     return {
-        "symbol": decoded,
-        "timeframe": timeframe,
+        "symbol": decoded, "timeframe": timeframe,
         "market_structure": smc["bos_choch"],
         "technical_layer": {
-            "order_block": smc["order_block"],
-            "fair_value_gap": smc["fvg"],
-            "liquidity_pool": smc["liquidity"],
-            "institutional_bias": smc["bias"],
-            "htf_bias": smc["htf_bias"],
-            "smc_score": smc["score"],
-            "score_label": smc["score_label"],
-            "score_detail": smc["score_detail"],
-            "entry_reason": smc["entry_reason"],
-            "confluence_quality": smc["confluence_quality"]
+            "order_block": smc["order_block"], "fair_value_gap": smc["fvg"],
+            "liquidity_pool": smc["liquidity"], "institutional_bias": smc["bias"],
+            "htf_bias": smc["htf_bias"], "smc_score": smc["score"],
+            "score_label": smc["score_label"], "score_detail": smc["score_detail"],
+            "entry_reason": smc["entry_reason"], "confluence_quality": smc["confluence_quality"]
         },
         "fundamental_layer": fund,
         "master_decision": {
@@ -781,7 +742,7 @@ async def get_signal(
         "ai_rationale": (
             f"Pair: {decoded} | Score: {smc['score']} ({smc['score_label']}) | "
             f"Confluence: {smc['confluence_quality']} | HTF: {smc['htf_bias']} | "
-            f"Learn: {smc.get('learn_note', 'neutral')}"
+            f"Fund: {fund['risk_level']}"
         )
     }
 
@@ -820,8 +781,7 @@ async def reset_history():
 @app.get("/api/health")
 async def health():
     return {
-        "status": "healthy",
-        "version": "11.2",
+        "status": "healthy", "version": "11.3",
         "trades": len(trade_history),
         "learning_adjust": learning_stats.get("score_adjust", 0),
         "min_score": get_dynamic_min_score()
