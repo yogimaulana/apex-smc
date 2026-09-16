@@ -1,5 +1,5 @@
-# main.py - Apex SMC Intelligence v11.3
-# Filter news: blok hanya jika <= 60 menit | Self-learning | Anti-duplikat
+# main.py - Apex SMC Intelligence v12.0
+# 100% biquote.io (price + OHLC) | Anti-duplikat | Self-learning | News >1 jam boleh sinyal
 
 from fastapi import FastAPI, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -7,21 +7,29 @@ from datetime import datetime, timezone
 import time, os, json, requests, numpy as np
 from typing import List, Dict, Optional, Tuple
 import logging
-import urllib.parse
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("SMC-Engine")
 
-app = FastAPI(title="Apex SMC Intelligence", version="11.3")
+app = FastAPI(title="Apex SMC Intelligence", version="12.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
-TWELVE_DATA_API_KEY = os.getenv("TWELVE_DATA_API_KEY", "ed06e6d76c6e42d88fdf510856d9b900")
 HISTORY_FILE = "trade_history.json"
 LEARNING_FILE = "learning_stats.json"
-CACHE_TTL = 8
+CACHE_TTL = 15
 FUND_CACHE_TTL = 300
 MIN_SCORE_BASE = 74
 ENTRY_ZONE_ATR_FACTOR = 0.40
+
+# Map timeframe frontend → biquote interval
+INTERVAL_MAP = {
+    "1min": "1m", "1m": "1m",
+    "5min": "5m", "5m": "5m",
+    "15min": "15m", "15m": "15m",
+    "30min": "30m", "30m": "30m",
+    "1h": "1h", "60min": "1h",
+    "4h": "4h", "1day": "1d", "1d": "1d",
+}
 
 cache_store = {}
 price_cache = {}
@@ -72,7 +80,7 @@ def save_learning():
 load_history()
 load_learning()
 
-# ==================== PRICE ====================
+# ==================== PRICE (biquote) ====================
 def fetch_realtime_price(symbol: str) -> Dict:
     key = f"price_{norm_symbol(symbol)}"
     now = time.time()
@@ -80,61 +88,60 @@ def fetch_realtime_price(symbol: str) -> Dict:
         return price_cache[key]["data"]
     try:
         clean = norm_symbol(symbol)
-        r = requests.get(f"https://biquote.io/api/{clean}", timeout=5)
+        r = requests.get(f"https://biquote.io/api/{clean}", timeout=8)
         data = r.json()
         if "mid" in data:
             result = {
-                "symbol": clean, "price": float(data["mid"]),
+                "symbol": clean,
+                "price": float(data["mid"]),
                 "bid": float(data.get("bid", data["mid"])),
                 "ask": float(data.get("ask", data["mid"])),
                 "spread": float(data.get("spread", 0)),
                 "timestamp": data.get("timestamp") or data.get("lastQuoteAt"),
-                "source": data.get("source", "biquote-MT5"), "stale": data.get("stale", False)
+                "source": data.get("source", "biquote-MT5"),
+                "stale": data.get("stale", False)
             }
             price_cache[key] = {"time": now, "data": result}
             return result
     except Exception as e:
-        logger.error(f"biquote error: {e}")
-    candles = fetch_candles(symbol, "1min", 5, force=False)
-    if candles:
-        result = {
-            "symbol": norm_symbol(symbol), "price": candles[-1]["close"],
-            "bid": candles[-1]["close"], "ask": candles[-1]["close"],
-            "spread": 0, "timestamp": candles[-1]["datetime"],
-            "source": "candle_fallback", "stale": True
-        }
-        price_cache[key] = {"time": now, "data": result}
-        return result
+        logger.error(f"biquote price error: {e}")
     if key in price_cache:
         return price_cache[key]["data"]
     return {"symbol": norm_symbol(symbol), "price": 0, "source": "error", "stale": True}
 
-# ==================== CANDLES ====================
+# ==================== CANDLES (biquote OHLC) ====================
 def fetch_candles(symbol: str, interval: str = "5min", outputsize: int = 100, force: bool = False) -> List[Dict]:
+    """Ambil OHLC dari biquote.io — tanpa Twelve Data"""
     sym = norm_symbol(symbol)
-    td_symbol = "XAU/USD" if sym in ("XAUUSD", "XAU/USD", "GOLD") else sym
-    key = f"{sym}_{interval}"
+    bq_interval = INTERVAL_MAP.get(interval, interval)
+    key = f"{sym}_{bq_interval}"
     now = time.time()
     if not force and key in cache_store and (now - cache_store[key]["time"]) < CACHE_TTL:
         return cache_store[key]["data"]
     try:
-        url = (
-            f"https://api.twelvedata.com/time_series"
-            f"?symbol={td_symbol}&interval={interval}&outputsize={outputsize}&apikey={TWELVE_DATA_API_KEY}"
-        )
-        r = requests.get(url, timeout=10)
+        url = f"https://biquote.io/api/{sym}/ohlc?interval={bq_interval}&limit={outputsize}"
+        r = requests.get(url, timeout=12)
         data = r.json()
-        if "values" not in data:
-            logger.warning(f"Twelve Data no values: {str(data)[:200]}")
+        bars = data.get("bars") or []
+        if not bars:
+            logger.warning(f"biquote ohlc empty: {data}")
             return cache_store.get(key, {}).get("data", [])
-        candles = [{
-            "datetime": c["datetime"], "open": float(c["open"]), "high": float(c["high"]),
-            "low": float(c["low"]), "close": float(c["close"]), "volume": float(c.get("volume") or 0)
-        } for c in reversed(data["values"])]
+
+        # biquote: newest-first → balik ke oldest-first
+        candles = []
+        for b in reversed(bars):
+            candles.append({
+                "datetime": b.get("openTime") or b.get("time") or "",
+                "open": float(b["open"]),
+                "high": float(b["high"]),
+                "low": float(b["low"]),
+                "close": float(b["close"]),
+                "volume": float(b.get("volume") or b.get("tickVolume") or 0)
+            })
         cache_store[key] = {"time": now, "data": candles}
         return candles
     except Exception as e:
-        logger.error(f"fetch_candles error: {e}")
+        logger.error(f"biquote ohlc error: {e}")
         return cache_store.get(key, {}).get("data", [])
 
 def calculate_atr(candles, period=14):
@@ -457,7 +464,7 @@ def analyze_pure_smc(candles, htf_candles=None):
         "learn_note": learn_note
     }
 
-# ==================== FUNDAMENTAL (blok hanya <= 60 menit) ====================
+# ==================== FUNDAMENTAL (biquote calendar) ====================
 def fetch_high_impact():
     now = time.time()
     if fundamental_cache["data"] and (now - fundamental_cache["time"]) < FUND_CACHE_TTL:
@@ -469,8 +476,8 @@ def fetch_high_impact():
             fundamental_cache["data"] = events
             fundamental_cache["time"] = now
             return events
-    except:
-        pass
+    except Exception as e:
+        logger.error(f"calendar error: {e}")
     return fundamental_cache["data"] or []
 
 def analyze_fundamental_xau():
@@ -501,7 +508,7 @@ def analyze_fundamental_xau():
             "next_high_impact": "None", "minutes_until_next": None, "upcoming_events": []
         }
 
-    # BLOK HANYA jika sisa <= 60 menit (di bawah 1 jam)
+    # Blok hanya jika <= 60 menit
     if next_ev["minutes_left"] <= 60:
         return {
             "scalping_status": "DANGER - HIGH IMPACT SOON", "risk_level": "EXTREME",
@@ -510,7 +517,6 @@ def analyze_fundamental_xau():
             "upcoming_events": upcoming[:4]
         }
 
-    # > 1 jam: BOLEH sinyal (hati-hati jika < 2 jam)
     if next_ev["minutes_left"] <= 120:
         return {
             "scalping_status": "CAUTION - NEWS WITHIN 2H", "risk_level": "MEDIUM",
@@ -592,11 +598,11 @@ async def get_signal(
     price_data = fetch_realtime_price(decoded)
     current_price = price_data["price"]
 
-    candles = fetch_candles(decoded, timeframe, force=True)
+    candles = fetch_candles(decoded, timeframe, outputsize=100, force=True)
     if not candles:
         candles = fetch_candles(decoded, timeframe, force=False)
     if not candles:
-        raise HTTPException(503, detail="Market data unavailable. Coba lagi 30-60 detik.")
+        raise HTTPException(503, detail="Market data unavailable (biquote OHLC). Coba lagi sebentar.")
 
     if current_price > 0:
         candles[-1]["close"] = current_price
@@ -631,7 +637,7 @@ async def get_signal(
                 "take_profit_1": active["tp1"], "take_profit_2": active["tp2"],
                 "risk_to_reward_ratio": active["rrr"], "atr_used": active.get("atr_used", "-"),
                 "current_price": str(round(current_price, 5)),
-                "price_source": price_data.get("source", "-"),
+                "price_source": price_data.get("source", "biquote"),
                 "last_candle_time": last_candle_time,
                 "entry_reason": active.get("entry_reason", "-")
             },
@@ -655,7 +661,6 @@ async def get_signal(
     entry = sl = tp1 = tp2 = "-"
     rrr = "0.0"
 
-    # Hanya EXTREME yang blok (sisa news <= 60 menit)
     if fund["risk_level"] == "EXTREME":
         action = "WAIT - HIGH IMPACT NEWS RISK"
         status = "BLOCKED BY FUNDAMENTAL"
@@ -725,7 +730,7 @@ async def get_signal(
             "take_profit_1": str(tp1), "take_profit_2": str(tp2),
             "risk_to_reward_ratio": rrr, "atr_used": atr_val,
             "current_price": str(round(current_price, 5)),
-            "price_source": price_data.get("source", "-"),
+            "price_source": price_data.get("source", "biquote"),
             "last_candle_time": last_candle_time,
             "entry_reason": smc["entry_reason"]
         },
@@ -741,8 +746,7 @@ async def get_signal(
         },
         "ai_rationale": (
             f"Pair: {decoded} | Score: {smc['score']} ({smc['score_label']}) | "
-            f"Confluence: {smc['confluence_quality']} | HTF: {smc['htf_bias']} | "
-            f"Fund: {fund['risk_level']}"
+            f"Confluence: {smc['confluence_quality']} | HTF: {smc['htf_bias']} | Source: biquote"
         )
     }
 
@@ -781,7 +785,9 @@ async def reset_history():
 @app.get("/api/health")
 async def health():
     return {
-        "status": "healthy", "version": "11.3",
+        "status": "healthy",
+        "version": "12.0",
+        "data_source": "biquote.io",
         "trades": len(trade_history),
         "learning_adjust": learning_stats.get("score_adjust", 0),
         "min_score": get_dynamic_min_score()
