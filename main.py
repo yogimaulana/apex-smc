@@ -1,5 +1,5 @@
-# main.py - Apex SMC Intelligence v11.1
-# Anti-duplikat + analisa disiplin + self-learning dari hasil trade
+# main.py - Apex SMC Intelligence v11.2
+# Anti-duplikat + self-learning + handling 503 lebih aman
 
 from fastapi import FastAPI, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -11,7 +11,7 @@ import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("SMC-Engine")
 
-app = FastAPI(title="Apex SMC Intelligence", version="11.1")
+app = FastAPI(title="Apex SMC Intelligence", version="11.2")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 TWELVE_DATA_API_KEY = os.getenv("TWELVE_DATA_API_KEY", "ed06e6d76c6e42d88fdf510856d9b900")
@@ -103,7 +103,7 @@ def fetch_realtime_price(symbol: str) -> Dict:
             return result
     except Exception as e:
         logger.error(f"biquote error: {e}")
-    candles = fetch_candles(symbol, "1min", 5)
+    candles = fetch_candles(symbol, "1min", 5, force=False)
     if candles:
         result = {
             "symbol": norm_symbol(symbol),
@@ -117,11 +117,15 @@ def fetch_realtime_price(symbol: str) -> Dict:
         }
         price_cache[key] = {"time": now, "data": result}
         return result
+    if key in price_cache:
+        return price_cache[key]["data"]
     return {"symbol": norm_symbol(symbol), "price": 0, "source": "error", "stale": True}
 
 # ==================== CANDLES ====================
 def fetch_candles(symbol: str, interval: str = "5min", outputsize: int = 100, force: bool = False) -> List[Dict]:
     sym = norm_symbol(symbol)
+    # Twelve Data sering pakai XAU/USD
+    td_symbol = "XAU/USD" if sym in ("XAUUSD", "XAU/USD", "GOLD") else sym
     key = f"{sym}_{interval}"
     now = time.time()
     if not force and key in cache_store and (now - cache_store[key]["time"]) < CACHE_TTL:
@@ -129,11 +133,13 @@ def fetch_candles(symbol: str, interval: str = "5min", outputsize: int = 100, fo
     try:
         url = (
             f"https://api.twelvedata.com/time_series"
-            f"?symbol={sym}&interval={interval}&outputsize={outputsize}&apikey={TWELVE_DATA_API_KEY}"
+            f"?symbol={td_symbol}&interval={interval}&outputsize={outputsize}&apikey={TWELVE_DATA_API_KEY}"
         )
-        r = requests.get(url, timeout=8)
+        r = requests.get(url, timeout=10)
         data = r.json()
         if "values" not in data:
+            logger.warning(f"Twelve Data no values: {data}")
+            # fallback cache lama
             return cache_store.get(key, {}).get("data", [])
         candles = [{
             "datetime": c["datetime"],
@@ -146,7 +152,7 @@ def fetch_candles(symbol: str, interval: str = "5min", outputsize: int = 100, fo
         cache_store[key] = {"time": now, "data": candles}
         return candles
     except Exception as e:
-        logger.error(e)
+        logger.error(f"fetch_candles error: {e}")
         return cache_store.get(key, {}).get("data", [])
 
 def calculate_atr(candles, period=14):
@@ -257,7 +263,6 @@ def record_trade_result(trade: Dict):
     })
     learning_stats["recent_results"] = recent[:20]
 
-    # Blok pola jika 2 SL beruntun pada pola sama
     pstats = learning_stats["by_pattern"][pattern]
     if result == "SL" and pstats["sl"] >= 2:
         last_two = [r for r in recent if r["pattern"] == pattern][:2]
@@ -282,16 +287,13 @@ def record_trade_result(trade: Dict):
             learning_stats["score_adjust"] = max(-6, learning_stats.get("score_adjust", 0) - 1)
 
     save_learning()
-    logger.info(f"Learning | result={result} | adjust={learning_stats.get('score_adjust')}")
 
 def apply_learning_to_score(base_score: int, pattern_key: str) -> Tuple[int, str]:
     score = base_score + int(learning_stats.get("score_adjust", 0))
     notes = []
-
     blocked = learning_stats.get("blocked_patterns", {})
     if pattern_key in blocked and blocked[pattern_key] > 0:
         return 0, "PATTERN_BLOCKED_RECENT_SL"
-
     p = learning_stats.get("by_pattern", {}).get(pattern_key)
     if p:
         total = p["tp"] + p["sl"]
@@ -306,7 +308,6 @@ def apply_learning_to_score(base_score: int, pattern_key: str) -> Tuple[int, str
             if p["sl"] >= 3 and p["tp"] == 0:
                 score -= 15
                 notes.append("pattern_all_sl")
-
     score = max(0, min(98, int(score)))
     return score, ",".join(notes) if notes else "neutral"
 
@@ -403,9 +404,8 @@ def analyze_pure_smc(candles, htf_candles=None):
 
     fvg_aligned = (bias == "BULLISH" and "Bullish FVG" in fvg) or (bias == "BEARISH" and "Bearish FVG" in fvg)
     ob_aligned = (bias == "BULLISH" and "Bullish OB" in ob) or (bias == "BEARISH" and "Bearish OB" in ob)
-    htf_ok = (htf_bias == bias and bias != "NEUTRAL") or htf_bias == "NEUTRAL"
 
-    if (ob_aligned or fvg_aligned) and htf_ok and bias != "NEUTRAL":
+    if (ob_aligned or fvg_aligned) and bias != "NEUTRAL" and (htf_bias == bias or htf_bias == "NEUTRAL"):
         confluence_quality = "clean"
     elif bias != "NEUTRAL" and (ob_aligned or fvg_aligned):
         confluence_quality = "partial"
@@ -475,22 +475,12 @@ def analyze_pure_smc(candles, htf_candles=None):
         setup = "SELL LIMIT (OTE)"
 
     return {
-        "bias": bias,
-        "bos_choch": structure,
-        "order_block": ob,
-        "fvg": fvg,
-        "liquidity": liq,
-        "score": score,
-        "score_label": score_label,
-        "score_detail": score_detail,
-        "setup": setup,
-        "current_price": current_price,
-        "atr": atr,
-        "last_candle_time": last_time,
-        "entry_reason": entry_reason,
-        "htf_bias": htf_bias,
-        "confluence_quality": confluence_quality,
-        "pattern_key": pattern_key,
+        "bias": bias, "bos_choch": structure, "order_block": ob, "fvg": fvg,
+        "liquidity": liq, "score": score, "score_label": score_label,
+        "score_detail": score_detail, "setup": setup,
+        "current_price": current_price, "atr": atr, "last_candle_time": last_time,
+        "entry_reason": entry_reason, "htf_bias": htf_bias,
+        "confluence_quality": confluence_quality, "pattern_key": pattern_key,
         "learn_note": learn_note
     }
 
@@ -624,9 +614,17 @@ async def get_signal(
 
     price_data = fetch_realtime_price(decoded)
     current_price = price_data["price"]
+
+    # Ambil candle: force dulu, kalau gagal pakai cache
     candles = fetch_candles(decoded, timeframe, force=True)
     if not candles:
-        raise HTTPException(503, "Cannot fetch market data")
+        candles = fetch_candles(decoded, timeframe, force=False)
+    if not candles:
+        raise HTTPException(
+            status_code=503,
+            detail="Market data unavailable (Twelve Data limit/error). Coba lagi 30-60 detik."
+        )
+
     if current_price > 0:
         candles[-1]["close"] = current_price
 
@@ -675,7 +673,7 @@ async def get_signal(
                 "sl_hits": learning_stats.get("sl_hits", 0),
                 "total_closed": learning_stats.get("total_closed", 0)
             },
-            "ai_rationale": f"Pair: {decoded} | Status: {active['status']} | 1 trade aktif — tidak buat sinyal baru"
+            "ai_rationale": f"Pair: {decoded} | Status: {active['status']} | 1 trade aktif"
         }
 
     smc = analyze_pure_smc(candles, htf_candles)
@@ -693,9 +691,9 @@ async def get_signal(
         action = "WAIT - HIGH IMPACT NEWS RISK"
         status = "BLOCKED BY FUNDAMENTAL"
         confidence = max(20, confidence - 30)
-    elif smc["score"] < min_sc or smc["confluence_quality"] == "poor" or "LEARNING BLOCK" in action:
-        action = action if "LEARNING BLOCK" in action else "WAIT - LOW CONFIDENCE"
-        status = "SCORE TOO LOW" if "LEARNING" not in action else "LEARNING BLOCK"
+    elif smc["score"] < min_sc or smc["confluence_quality"] == "poor" or "LEARNING BLOCK" in str(action):
+        action = action if "LEARNING BLOCK" in str(action) else "WAIT - LOW CONFIDENCE"
+        status = "LEARNING BLOCK" if "LEARNING" in str(action) else "SCORE TOO LOW"
     elif "BUY" in action:
         entry = round(current_price - (atr_val * 0.25), 5)
         sl = round(entry - (atr_val * 1.35), 5)
@@ -704,8 +702,7 @@ async def get_signal(
         tp2 = round(entry + risk * 3.5, 5)
         rrr = "1:2.2"
         if is_same_entry_zone(decoded, entry, atr_val):
-            action = "WAIT - SAME ENTRY ZONE"
-            status = "DUPLICATE ZONE"
+            action, status = "WAIT - SAME ENTRY ZONE", "DUPLICATE ZONE"
             entry = sl = tp1 = tp2 = "-"
         else:
             status = "PENDING ENTRY" if auto_lock else "SIGNAL READY"
@@ -717,8 +714,7 @@ async def get_signal(
         tp2 = round(entry - risk * 3.5, 5)
         rrr = "1:2.2"
         if is_same_entry_zone(decoded, entry, atr_val):
-            action = "WAIT - SAME ENTRY ZONE"
-            status = "DUPLICATE ZONE"
+            action, status = "WAIT - SAME ENTRY ZONE", "DUPLICATE ZONE"
             entry = sl = tp1 = tp2 = "-"
         else:
             status = "PENDING ENTRY" if auto_lock else "SIGNAL READY"
@@ -729,19 +725,12 @@ async def get_signal(
             "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "symbol": decoded,
             "type": action,
-            "entry": str(entry),
-            "sl": str(sl),
-            "tp1": str(tp1),
-            "tp2": str(tp2),
-            "rrr": rrr,
-            "status": status,
-            "atr_used": atr_val,
+            "entry": str(entry), "sl": str(sl), "tp1": str(tp1), "tp2": str(tp2),
+            "rrr": rrr, "status": status, "atr_used": atr_val,
             "order_block": smc["order_block"],
             "entry_reason": smc["entry_reason"],
-            "bias": smc["bias"],
-            "htf_bias": smc["htf_bias"],
-            "score": smc["score"],
-            "score_label": smc["score_label"],
+            "bias": smc["bias"], "htf_bias": smc["htf_bias"],
+            "score": smc["score"], "score_label": smc["score_label"],
             "confluence_quality": smc["confluence_quality"],
             "pattern_key": smc["pattern_key"]
         }
@@ -771,12 +760,9 @@ async def get_signal(
             "execution_status": status
         },
         "execution_parameters": {
-            "entry_price": str(entry),
-            "stop_loss": str(sl),
-            "take_profit_1": str(tp1),
-            "take_profit_2": str(tp2),
-            "risk_to_reward_ratio": rrr,
-            "atr_used": atr_val,
+            "entry_price": str(entry), "stop_loss": str(sl),
+            "take_profit_1": str(tp1), "take_profit_2": str(tp2),
+            "risk_to_reward_ratio": rrr, "atr_used": atr_val,
             "current_price": str(round(current_price, 5)),
             "price_source": price_data.get("source", "-"),
             "last_candle_time": last_candle_time,
@@ -795,7 +781,7 @@ async def get_signal(
         "ai_rationale": (
             f"Pair: {decoded} | Score: {smc['score']} ({smc['score_label']}) | "
             f"Confluence: {smc['confluence_quality']} | HTF: {smc['htf_bias']} | "
-            f"Learn: {smc.get('learn_note', 'neutral')} (adj {learning_stats.get('score_adjust', 0)})"
+            f"Learn: {smc.get('learn_note', 'neutral')}"
         )
     }
 
@@ -835,7 +821,7 @@ async def reset_history():
 async def health():
     return {
         "status": "healthy",
-        "version": "11.1",
+        "version": "11.2",
         "trades": len(trade_history),
         "learning_adjust": learning_stats.get("score_adjust", 0),
         "min_score": get_dynamic_min_score()
