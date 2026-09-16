@@ -11,8 +11,6 @@
     .glow-bull { box-shadow: 0 0 25px rgba(34,197,94,0.35); }
     .glow-bear { box-shadow: 0 0 25px rgba(239,68,68,0.35); }
     .glow-pending { box-shadow: 0 0 20px rgba(59,130,246,0.4); }
-    .glow-danger { box-shadow: 0 0 25px rgba(239,68,68,0.5); }
-    .glow-caution { box-shadow: 0 0 20px rgba(234,179,8,0.4); }
   </style>
 </head>
 <body class="bg-slate-950 text-slate-100 min-h-screen">
@@ -68,21 +66,14 @@
       </div>
 
       <div class="lg:col-span-2 space-y-4">
-        <div id="fundamental-box" class="rounded-2xl p-5 border">
-          <div class="flex justify-between gap-4">
-            <div>
-              <div class="flex items-center gap-2 mb-1">
-                <i class="fas fa-newspaper text-amber-400"></i>
-                <span class="text-sm font-semibold">Fundamental (Scalping)</span>
-              </div>
-              <p id="fund-status" class="text-lg font-bold">—</p>
-              <p id="fund-recommendation" class="text-sm text-slate-300 mt-1">—</p>
-            </div>
-            <div class="text-right">
-              <p class="text-xs text-slate-500">Risk</p>
-              <span id="risk-badge" class="px-3 py-1 rounded-lg text-xs font-bold">—</span>
-            </div>
+        <!-- Fundamental tanpa Risk badge -->
+        <div id="fundamental-box" class="rounded-2xl p-5 border bg-slate-900/80 border-slate-700">
+          <div class="flex items-center gap-2 mb-1">
+            <i class="fas fa-newspaper text-amber-400"></i>
+            <span class="text-sm font-semibold">Fundamental (Scalping)</span>
           </div>
+          <p id="fund-status" class="text-lg font-bold">—</p>
+          <p id="fund-recommendation" class="text-sm text-slate-300 mt-1">—</p>
           <div class="mt-4 pt-3 border-t border-slate-700/50 grid grid-cols-2 gap-3 text-sm">
             <div>
               <p class="text-xs text-slate-500">Next High Impact</p>
@@ -219,7 +210,6 @@
     const ob = tech.order_block || "";
     const fvg = tech.fair_value_gap || "";
     const liq = tech.liquidity_pool || "";
-
     const lines = [];
 
     if (bias === "BULLISH") lines.push(`<strong>Arah:</strong> BULLISH`);
@@ -229,23 +219,19 @@
     if (structure && structure !== "—" && !structure.includes("Trade Active")) {
       lines.push(`<strong>Struktur:</strong> ${structure}`);
     }
-
     if (ob && ob !== "None" && ob !== "—") {
       const m = ob.match(/([\d.]+)\s*-\s*([\d.]+)/);
       const zone = m ? `${roundPrice(m[1])} – ${roundPrice(m[2])}` : ob;
       lines.push(`<strong>Order Block:</strong> ${zone}`);
     }
-
     if (fvg && !fvg.includes("No Valid") && fvg !== "—") {
       const m = fvg.match(/([\d.]+)\s*-\s*([\d.]+)/);
       const zone = m ? `${roundPrice(m[1])} – ${roundPrice(m[2])}` : fvg;
       lines.push(`<strong>FVG:</strong> ${zone}`);
     }
-
     if (liq && liq.includes("Swept")) {
       lines.push(`<strong>Likuiditas:</strong> ${liq}`);
     }
-
     if (htf && htf !== "NEUTRAL" && htf !== "—") {
       lines.push(`<strong>HTF (1H):</strong> ${htf}`);
     }
@@ -283,7 +269,7 @@
       else if (lower.includes("fvg")) color = "bg-purple-900/50 text-purple-300 border border-purple-700/50";
       else if (lower.includes("swept") || lower.includes("liquidity")) color = "bg-emerald-900/50 text-emerald-300 border border-emerald-700/50";
       else if (lower.includes("htf")) color = "bg-slate-700 text-slate-300 border border-slate-600";
-      let label = part.replace(/(\d+\.\d{2})\d+/g, "$1");
+      const label = part.replace(/(\d+\.\d{2})\d+/g, "$1");
       return `<span class="px-2.5 py-1 rounded-lg text-xs font-medium ${color}">${label}</span>`;
     }).join("");
   }
@@ -352,30 +338,13 @@
       warnEl.classList.add("hidden");
     }
 
+    // Fundamental — tanpa Risk badge
     const fund = data.fundamental_layer || {};
     document.getElementById("fund-status").textContent = fund.scalping_status || "—";
     document.getElementById("fund-recommendation").textContent = fund.recommendation || "—";
     document.getElementById("next-event").textContent = fund.next_high_impact || "None";
-    document.getElementById("time-remaining").textContent = fund.minutes_until_next != null ? fund.minutes_until_next + " menit" : "—";
-
-    const risk = fund.risk_level || "LOW";
-    const fundBox = document.getElementById("fundamental-box");
-    const riskBadge = document.getElementById("risk-badge");
-    fundBox.className = "rounded-2xl p-5 border ";
-    riskBadge.className = "px-3 py-1 rounded-lg text-xs font-bold ";
-    if (risk === "EXTREME") {
-      fundBox.classList.add("bg-red-950/40", "border-red-700", "glow-danger");
-      riskBadge.classList.add("bg-red-600", "text-white");
-      riskBadge.textContent = "EXTREME";
-    } else if (risk === "HIGH" || risk === "MEDIUM") {
-      fundBox.classList.add("bg-yellow-950/30", "border-yellow-600", "glow-caution");
-      riskBadge.classList.add("bg-yellow-500", "text-black");
-      riskBadge.textContent = risk;
-    } else {
-      fundBox.classList.add("bg-emerald-950/20", "border-emerald-800");
-      riskBadge.classList.add("bg-emerald-700", "text-white");
-      riskBadge.textContent = "LOW";
-    }
+    document.getElementById("time-remaining").textContent =
+      fund.minutes_until_next != null ? fund.minutes_until_next + " menit" : "—";
 
     const box = document.getElementById("decision-box");
     box.classList.remove("glow-bull", "glow-bear", "glow-pending");
