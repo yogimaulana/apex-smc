@@ -1,5 +1,5 @@
-# main.py - Apex SMC Intelligence v12.2
-# biquote 100% | SL struktur + CAP | TP ketat | filter probabilitas tinggi
+# main.py - Apex SMC Intelligence v12.3
+# biquote 100% | max SL $8 (≈80 pips) | news = warning only | filter berkualitas
 
 from fastapi import FastAPI, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -12,7 +12,7 @@ import re
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("SMC-Engine")
 
-app = FastAPI(title="Apex SMC Intelligence", version="12.2")
+app = FastAPI(title="Apex SMC Intelligence", version="12.3")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 HISTORY_FILE = "trade_history.json"
@@ -22,11 +22,11 @@ FUND_CACHE_TTL = 300
 MIN_SCORE_BASE = 76
 ENTRY_ZONE_ATR_FACTOR = 0.40
 
-# Risk scalping XAUUSD
-MAX_SL_USD = 3.20
-MIN_SL_USD = 0.90
+# Risk: max SL ≈ 80 pips (pip $0.10 = $8)
+MAX_SL_USD = 8.00
+MIN_SL_USD = 1.20
 TP1_RR = 1.6
-TP2_RR = 2.4
+TP2_RR = 2.2
 ENTRY_ATR_FALLBACK = 0.12
 
 INTERVAL_MAP = {
@@ -203,7 +203,6 @@ def get_structure_bias(candles) -> Tuple[str, str]:
     return bias, structure
 
 def parse_zone(text: str) -> Optional[Tuple[float, float]]:
-    """Ambil low-high dari string OB/FVG"""
     if not text or text in ("None", "No Valid FVG"):
         return None
     m = re.search(r"([\d.]+)\s*[-–]\s*([\d.]+)", text)
@@ -213,10 +212,7 @@ def parse_zone(text: str) -> Optional[Tuple[float, float]]:
     return (min(a, b), max(a, b))
 
 def build_execution_levels(bias: str, current: float, atr: float, ob_str: str, fvg_str: str, candles: List[Dict]) -> Optional[Dict]:
-    """
-    Entry di zona OB/FVG, SL di luar struktur, CAP max $3.20.
-    Return None jika setup tidak layak (SL terlalu lebar / zona invalid).
-    """
+    """Entry zona OB/FVG, SL struktur, CAP max $8 (≈80 pips)."""
     is_buy = bias == "BULLISH"
     zone = parse_zone(ob_str) if ("Bullish OB" in ob_str or "Bearish OB" in ob_str) else None
     if zone is None:
@@ -227,10 +223,8 @@ def build_execution_levels(bias: str, current: float, atr: float, ob_str: str, f
     sh, sl_pts = find_swings(np.array(highs), np.array(lows), 2, 2)
 
     if is_buy:
-        # Entry: tengah zona atau sedikit di bawah harga
         if zone:
             entry = round((zone[0] + zone[1]) / 2, 2)
-            # jika zona sudah jauh di atas harga, pakai edge bawah
             if entry > current:
                 entry = round(min(zone[1], current - atr * ENTRY_ATR_FALLBACK), 2)
             struct_sl = zone[0] - atr * 0.15
@@ -238,10 +232,7 @@ def build_execution_levels(bias: str, current: float, atr: float, ob_str: str, f
             entry = round(current - atr * ENTRY_ATR_FALLBACK, 2)
             struct_sl = entry - atr * 0.85
         if sl_pts:
-            last_low = sl_pts[-1][1]
-            struct_sl = min(struct_sl, last_low - atr * 0.1)
-        sl_dist = current - struct_sl if struct_sl < current else atr * 0.85
-        # dari entry
+            struct_sl = min(struct_sl, sl_pts[-1][1] - atr * 0.1)
         sl_dist = entry - struct_sl if struct_sl < entry else atr * 0.85
     else:
         if zone:
@@ -253,14 +244,12 @@ def build_execution_levels(bias: str, current: float, atr: float, ob_str: str, f
             entry = round(current + atr * ENTRY_ATR_FALLBACK, 2)
             struct_sl = entry + atr * 0.85
         if sh:
-            last_high = sh[-1][1]
-            struct_sl = max(struct_sl, last_high + atr * 0.1)
+            struct_sl = max(struct_sl, sh[-1][1] + atr * 0.1)
         sl_dist = struct_sl - entry if struct_sl > entry else atr * 0.85
 
     sl_dist = abs(sl_dist)
-    # CAP: terlalu lebar → tolak setup (jangan paksakan)
     if sl_dist > MAX_SL_USD:
-        return None
+        return None  # struktur terlalu lebar untuk scalp
     sl_dist = max(MIN_SL_USD, min(sl_dist, MAX_SL_USD))
 
     if is_buy:
@@ -272,22 +261,16 @@ def build_execution_levels(bias: str, current: float, atr: float, ob_str: str, f
         tp1 = round(entry - sl_dist * TP1_RR, 2)
         tp2 = round(entry - sl_dist * TP2_RR, 2)
 
-    # sanity: entry tidak boleh di sisi salah vs harga terlalu ekstrem
     if is_buy and entry > current + atr * 0.5:
         return None
     if not is_buy and entry < current - atr * 0.5:
         return None
 
     return {
-        "entry": entry,
-        "sl": sl,
-        "tp1": tp1,
-        "tp2": tp2,
-        "rrr": f"1:{TP1_RR}",
-        "sl_dist": round(sl_dist, 2)
+        "entry": entry, "sl": sl, "tp1": tp1, "tp2": tp2,
+        "rrr": f"1:{TP1_RR}", "sl_dist": round(sl_dist, 2)
     }
 
-# ==================== LEARNING ====================
 def make_pattern_key(smc: dict) -> str:
     bias = smc.get("bias", "N")
     htf = smc.get("htf_bias", "N")
@@ -394,7 +377,6 @@ def get_active_trade(symbol: str) -> Optional[Dict]:
         None
     )
 
-# ==================== SMC ====================
 def analyze_pure_smc(candles, htf_candles=None):
     if len(candles) < 30:
         return {
@@ -525,7 +507,6 @@ def analyze_pure_smc(candles, htf_candles=None):
     min_sc = get_dynamic_min_score()
     score_label = "HIGH" if score >= 84 else ("MEDIUM" if score >= min_sc else "LOW")
 
-    # Setup hanya jika probabilitas tinggi
     setup = "WAIT FOR MITIGATION"
     if learn_note == "PATTERN_BLOCKED_RECENT_SL":
         setup = "WAIT - LEARNING BLOCK"
@@ -564,6 +545,7 @@ def fetch_high_impact():
     return fundamental_cache["data"] or []
 
 def analyze_fundamental_xau():
+    """News hanya peringatan — tidak memblokir sinyal."""
     events = fetch_high_impact()
     now = datetime.now(timezone.utc)
     critical = ["nonfarm", "nfp", "payroll", "cpi", "core cpi", "pce", "fomc", "interest rate",
@@ -583,31 +565,48 @@ def analyze_fundamental_xau():
                     min_m, next_ev = mins, info
         except:
             continue
+
     if not next_ev:
         return {
-            "scalping_status": "SAFE FOR SCALPING", "risk_level": "LOW",
+            "scalping_status": "SAFE FOR SCALPING",
+            "risk_level": "LOW",
             "recommendation": "Tidak ada High Impact. Scalping aman.",
-            "next_high_impact": "None", "minutes_until_next": None, "upcoming_events": []
+            "next_high_impact": "None",
+            "minutes_until_next": None,
+            "upcoming_events": [],
+            "warning_only": True
         }
+
     if next_ev["minutes_left"] <= 60:
         return {
-            "scalping_status": "DANGER - HIGH IMPACT SOON", "risk_level": "EXTREME",
-            "recommendation": f"HINDARI SCALPING! {next_ev['name']} dalam {next_ev['minutes_left']} menit.",
-            "next_high_impact": next_ev["name"], "minutes_until_next": next_ev["minutes_left"],
-            "upcoming_events": upcoming[:4]
+            "scalping_status": "⚠ WARNING - HIGH IMPACT SOON",
+            "risk_level": "HIGH",
+            "recommendation": f"PERINGATAN: {next_ev['name']} dalam {next_ev['minutes_left']} menit. Sinyal tetap aktif — kelola risk manual.",
+            "next_high_impact": next_ev["name"],
+            "minutes_until_next": next_ev["minutes_left"],
+            "upcoming_events": upcoming[:4],
+            "warning_only": True
         }
-    if next_ev["minutes_left"] <= 120:
+
+    if next_ev["minutes_until_next"] if False else next_ev["minutes_left"] <= 120:
         return {
-            "scalping_status": "CAUTION - NEWS WITHIN 2H", "risk_level": "MEDIUM",
-            "recommendation": f"Hati-hati. {next_ev['name']} dalam {round(next_ev['minutes_left']/60, 1)} jam. Sinyal masih boleh.",
-            "next_high_impact": next_ev["name"], "minutes_until_next": next_ev["minutes_left"],
-            "upcoming_events": upcoming[:4]
+            "scalping_status": "⚠ CAUTION - NEWS WITHIN 2H",
+            "risk_level": "MEDIUM",
+            "recommendation": f"Hati-hati: {next_ev['name']} dalam {round(next_ev['minutes_left']/60, 1)} jam. Sinyal tidak diblokir.",
+            "next_high_impact": next_ev["name"],
+            "minutes_until_next": next_ev["minutes_left"],
+            "upcoming_events": upcoming[:4],
+            "warning_only": True
         }
+
     return {
-        "scalping_status": "SAFE FOR SCALPING", "risk_level": "LOW",
+        "scalping_status": "SAFE FOR SCALPING",
+        "risk_level": "LOW",
         "recommendation": f"Aman. Next event masih {round(next_ev['minutes_left']/60, 1)} jam lagi.",
-        "next_high_impact": next_ev["name"], "minutes_until_next": next_ev["minutes_left"],
-        "upcoming_events": upcoming[:4]
+        "next_high_impact": next_ev["name"],
+        "minutes_until_next": next_ev["minutes_left"],
+        "upcoming_events": upcoming[:4],
+        "warning_only": True
     }
 
 def manage_trades(symbol: str, current_price: float):
@@ -735,11 +734,10 @@ async def get_signal(
     entry = sl = tp1 = tp2 = "-"
     rrr = "0.0"
 
-    if fund["risk_level"] == "EXTREME":
-        action = "WAIT - HIGH IMPACT NEWS RISK"
-        status = "BLOCKED BY FUNDAMENTAL"
-        confidence = max(20, confidence - 30)
-    elif "HTF CONFLICT" in action or "NO CLEAR STRUCTURE" in action or "LEARNING BLOCK" in action:
+    # --- NEWS TIDAK MEMBLOKIR ---
+    # fund hanya ditampilkan sebagai warning di fundamental_layer
+
+    if "HTF CONFLICT" in action or "NO CLEAR STRUCTURE" in action or "LEARNING BLOCK" in action:
         status = action.replace("WAIT - ", "")
     elif smc["score"] < min_sc or smc["confluence_quality"] == "poor":
         action = "WAIT - LOW CONFIDENCE"
@@ -777,6 +775,14 @@ async def get_signal(
         trade_history.insert(0, new_trade)
         save_history()
 
+    # Tambahan teks warning di rationale jika ada news dekat
+    rationale = (
+        f"v12.3 | {decoded} | Score {smc['score']} | {smc['confluence_quality']} | "
+        f"HTF {smc['htf_bias']} | Max SL ${MAX_SL_USD} (~80 pips) | TP1 {TP1_RR}R"
+    )
+    if fund.get("risk_level") in ("HIGH", "MEDIUM"):
+        rationale += f" | ⚠ NEWS: {fund.get('next_high_impact', '')} ({fund.get('minutes_until_next')}m)"
+
     return {
         "symbol": decoded, "timeframe": timeframe,
         "market_structure": smc["bos_choch"],
@@ -812,10 +818,7 @@ async def get_signal(
             "learn_note": smc.get("learn_note", "neutral"),
             "pattern_key": smc.get("pattern_key", "")
         },
-        "ai_rationale": (
-            f"v12.2 | {decoded} | Score {smc['score']} | {smc['confluence_quality']} | "
-            f"HTF {smc['htf_bias']} | SL cap ${MAX_SL_USD} | TP1 {TP1_RR}R"
-        )
+        "ai_rationale": rationale
     }
 
 @app.get("/api/learning-stats")
@@ -854,10 +857,12 @@ async def reset_history():
 async def health():
     return {
         "status": "healthy",
-        "version": "12.2",
+        "version": "12.3",
         "data_source": "biquote.io",
         "max_sl_usd": MAX_SL_USD,
+        "max_sl_pips_approx": 80,
         "tp1_rr": TP1_RR,
+        "news_blocks_signal": False,
         "trades": len(trade_history),
         "learning_adjust": learning_stats.get("score_adjust", 0),
         "min_score": get_dynamic_min_score()
