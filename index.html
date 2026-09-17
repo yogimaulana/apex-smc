@@ -13,8 +13,6 @@
       --card: rgba(14, 18, 32, 0.72);
       --line: rgba(255,255,255,0.06);
       --gold: #e8b86d;
-      --mint: #34d399;
-      --rose: #fb7185;
     }
     * { box-sizing: border-box; }
     body {
@@ -131,7 +129,6 @@
   <div id="status" class="hidden text-center text-sm text-white/40 py-1"></div>
 
   <section id="hero" class="hidden grid grid-cols-1 lg:grid-cols-12 gap-4">
-    <!-- Decision -->
     <div id="decision-box" class="lg:col-span-4 card p-6 rise relative overflow-hidden">
       <div class="absolute -top-8 -right-8 w-32 h-32 rounded-full bg-[#e8b86d]/5 blur-2xl pointer-events-none"></div>
       <p class="label mb-3">Decision</p>
@@ -147,7 +144,6 @@
       </div>
     </div>
 
-    <!-- Right stack -->
     <div class="lg:col-span-8 space-y-4">
       <div class="card p-5 rise">
         <div class="flex items-center gap-2 mb-2">
@@ -199,11 +195,6 @@
       <div class="rounded-xl bg-white/[0.03] p-3 text-center"><p class="label">ATR</p><p id="atr-used" class="mono text-sm mt-1">—</p></div>
       <div class="rounded-xl bg-white/[0.03] p-3 text-center"><p class="label">Candle</p><p id="last-candle" class="mono text-[10px] text-white/40 mt-1">—</p></div>
     </div>
-  </section>
-
-  <section id="rationale-card" class="hidden card px-5 py-3.5">
-    <p class="label mb-1">Rationale</p>
-    <p id="rationale" class="text-sm text-white/45">—</p>
   </section>
 
   <section class="card overflow-hidden">
@@ -293,6 +284,29 @@
     }).join("");
   }
 
+  function formatFund(fund) {
+    let fStatus = fund.scalping_status || "—";
+    let fRec = fund.recommendation || "—";
+    const name = fund.next_high_impact || "High Impact";
+    const m = fund.minutes_until_next;
+
+    if (fund.risk_level === "HIGH" || (fStatus && String(fStatus).includes("WARNING"))) {
+      fStatus = "⚠ News warning";
+      fRec = m != null ? name + " · " + Math.round(m) + " menit lagi" : name;
+    } else if (fund.risk_level === "MEDIUM" || (fStatus && String(fStatus).includes("CAUTION"))) {
+      fStatus = "News soon";
+      fRec = m != null ? name + " · ~" + (Math.round(m / 6) / 10) + " jam" : name;
+    } else if (fund.risk_level === "LOW") {
+      fStatus = "Safe for scalping";
+      if (m != null && name && name !== "None") {
+        fRec = "Next: " + name + " · " + Math.round(m) + " m";
+      } else {
+        fRec = "Tidak ada high impact dekat";
+      }
+    }
+    return { fStatus, fRec };
+  }
+
   async function fetchSignal(manual) {
     const symbol = document.getElementById("symbol").value.trim() || "XAU/USD";
     const tf = document.getElementById("timeframe").value;
@@ -316,7 +330,7 @@
   }
 
   function render(data) {
-    ["hero", "reason-card", "exec-card", "rationale-card"].forEach(id => {
+    ["hero", "reason-card", "exec-card"].forEach(id => {
       document.getElementById(id).classList.remove("hidden");
     });
     const md = data.master_decision || {};
@@ -332,7 +346,7 @@
     if (st === "PENDING ENTRY") badge.className += "bg-indigo-500 text-white";
     else if (st === "FILLED & ACTIVE") badge.className += "bg-emerald-500 text-white";
     else if (st.includes("MISS")) badge.className += "bg-orange-500 text-white";
-    else if (st.includes("CLOSED")) badge.className += "bg-white/10 text-white/60";
+    else if (st.includes("CLOSED") || st.includes("INVALID")) badge.className += "bg-white/10 text-white/60";
     else if (st.includes("BLOCKED")) badge.className += "bg-rose-500 text-white";
     else badge.className += "bg-white/5 text-white/50";
 
@@ -353,11 +367,12 @@
     else w.classList.add("hidden");
 
     const fund = data.fundamental_layer || {};
-    document.getElementById("fund-status").textContent = fund.scalping_status || "—";
-    document.getElementById("fund-recommendation").textContent = fund.recommendation || "—";
+    const { fStatus, fRec } = formatFund(fund);
+    document.getElementById("fund-status").textContent = fStatus;
+    document.getElementById("fund-recommendation").textContent = fRec;
     document.getElementById("next-event").textContent = fund.next_high_impact || "None";
     document.getElementById("time-remaining").textContent =
-      fund.minutes_until_next != null ? fund.minutes_until_next + " m" : "—";
+      fund.minutes_until_next != null ? Math.round(fund.minutes_until_next) + " m" : "—";
 
     const box = document.getElementById("decision-box");
     box.classList.remove("glow-buy", "glow-sell", "glow-wait");
@@ -374,7 +389,6 @@
     document.getElementById("rrr").textContent = ep.risk_to_reward_ratio || "—";
     document.getElementById("atr-used").textContent = ep.atr_used || "—";
     document.getElementById("last-candle").textContent = ep.last_candle_time || "—";
-    document.getElementById("rationale").textContent = data.ai_rationale || "—";
   }
 
   async function loadHistory() {
@@ -391,7 +405,7 @@
         if (t.status === "PENDING ENTRY") sc = "bg-indigo-500/90 text-white";
         else if (t.status === "FILLED & ACTIVE") sc = "bg-emerald-500/90 text-white";
         else if ((t.status || "").includes("MISS")) sc = "bg-orange-500/90 text-white";
-        else if ((t.status || "").includes("CLOSED")) sc = "bg-white/10 text-white/50";
+        else if ((t.status || "").includes("CLOSED") || (t.status || "").includes("INVALID")) sc = "bg-white/10 text-white/50";
         const tc = (t.type || "").includes("BUY") ? "text-emerald-400" : "text-rose-400";
         return `<tr class="border-b border-white/[0.03]">
           <td class="px-4 py-2.5 text-white/30">${t.id}</td>
@@ -418,7 +432,7 @@
     document.getElementById("countdown").textContent = left;
     document.getElementById("bar").style.width = (left / REFRESH * 100) + "%";
     const c = document.getElementById("countdown");
-    if (left <= 10) c.classList.add("text-rose-400");
+    if (left <= 10) { c.classList.add("text-rose-400"); c.classList.remove("text-[#e8b86d]"); }
     else { c.classList.remove("text-rose-400"); c.classList.add("text-[#e8b86d]"); }
     if (left <= 0) { fetchSignal(false); left = REFRESH; }
     else left--;
