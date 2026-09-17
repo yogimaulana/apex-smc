@@ -1,5 +1,5 @@
-# main.py - Apex SMC Intelligence v12.3
-# biquote 100% | max SL $8 (≈80 pips) | news = warning only | filter berkualitas
+# main.py - Apex SMC Intelligence v12.5
+# Zona high-prob (OB/FVG) = boleh sinyal | OTE = bonus | fix MISS | news warning | max SL $8
 
 from fastapi import FastAPI, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -12,7 +12,7 @@ import re
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("SMC-Engine")
 
-app = FastAPI(title="Apex SMC Intelligence", version="12.3")
+app = FastAPI(title="Apex SMC Intelligence", version="12.5")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 HISTORY_FILE = "trade_history.json"
@@ -22,20 +22,17 @@ FUND_CACHE_TTL = 300
 MIN_SCORE_BASE = 76
 ENTRY_ZONE_ATR_FACTOR = 0.40
 
-# Risk: max SL ≈ 80 pips (pip $0.10 = $8)
 MAX_SL_USD = 8.00
 MIN_SL_USD = 1.20
 TP1_RR = 1.6
 TP2_RR = 2.2
 ENTRY_ATR_FALLBACK = 0.12
+OTE_LOW, OTE_HIGH = 0.62, 0.79
 
 INTERVAL_MAP = {
-    "1min": "1m", "1m": "1m",
-    "5min": "5m", "5m": "5m",
-    "15min": "15m", "15m": "15m",
-    "30min": "30m", "30m": "30m",
-    "1h": "1h", "60min": "1h",
-    "4h": "4h", "1day": "1d", "1d": "1d",
+    "1min": "1m", "1m": "1m", "5min": "5m", "5m": "5m",
+    "15min": "15m", "15m": "15m", "30min": "30m", "30m": "30m",
+    "1h": "1h", "60min": "1h", "4h": "4h", "1day": "1d", "1d": "1d",
 }
 
 cache_store = {}
@@ -98,14 +95,12 @@ def fetch_realtime_price(symbol: str) -> Dict:
         data = r.json()
         if "mid" in data:
             result = {
-                "symbol": clean,
-                "price": float(data["mid"]),
+                "symbol": clean, "price": float(data["mid"]),
                 "bid": float(data.get("bid", data["mid"])),
                 "ask": float(data.get("ask", data["mid"])),
                 "spread": float(data.get("spread", 0)),
                 "timestamp": data.get("timestamp") or data.get("lastQuoteAt"),
-                "source": data.get("source", "biquote-MT5"),
-                "stale": data.get("stale", False)
+                "source": data.get("source", "biquote-MT5"), "stale": data.get("stale", False)
             }
             price_cache[key] = {"time": now, "data": result}
             return result
@@ -133,10 +128,8 @@ def fetch_candles(symbol: str, interval: str = "5min", outputsize: int = 100, fo
         for b in reversed(bars):
             candles.append({
                 "datetime": b.get("openTime") or b.get("time") or "",
-                "open": float(b["open"]),
-                "high": float(b["high"]),
-                "low": float(b["low"]),
-                "close": float(b["close"]),
+                "open": float(b["open"]), "high": float(b["high"]),
+                "low": float(b["low"]), "close": float(b["close"]),
                 "volume": float(b.get("volume") or b.get("tickVolume") or 0)
             })
         cache_store[key] = {"time": now, "data": candles}
@@ -202,6 +195,20 @@ def get_structure_bias(candles) -> Tuple[str, str]:
             structure, bias = "BULLISH BOS (Break High)", "BULLISH"
     return bias, structure
 
+def swing_range(candles) -> Optional[Tuple[float, float]]:
+    highs = np.array([c["high"] for c in candles])
+    lows = np.array([c["low"] for c in candles])
+    sh, sl = find_swings(highs, lows, 2, 2)
+    if len(sh) < 1 or len(sl) < 1:
+        hi = float(np.max(highs[-25:]))
+        lo = float(np.min(lows[-25:]))
+    else:
+        hi = max(sh[-1][1], float(np.max(highs[-20:])))
+        lo = min(sl[-1][1], float(np.min(lows[-20:])))
+    if hi - lo < 1.0:
+        return None
+    return lo, hi
+
 def parse_zone(text: str) -> Optional[Tuple[float, float]]:
     if not text or text in ("None", "No Valid FVG"):
         return None
@@ -212,63 +219,85 @@ def parse_zone(text: str) -> Optional[Tuple[float, float]]:
     return (min(a, b), max(a, b))
 
 def build_execution_levels(bias: str, current: float, atr: float, ob_str: str, fvg_str: str, candles: List[Dict]) -> Optional[Dict]:
-    """Entry zona OB/FVG, SL struktur, CAP max $8 (≈80 pips)."""
+    """
+    Wajib: zona OB atau FVG valid (high probability).
+    OTE = bonus (in_ote=True), BUKAN syarat.
+    SL struktur + CAP $8. Anti miss instan (TP di sisi benar vs harga).
+    """
     is_buy = bias == "BULLISH"
-    zone = parse_zone(ob_str) if ("Bullish OB" in ob_str or "Bearish OB" in ob_str) else None
+    zone = None
+    if is_buy and "Bullish OB" in (ob_str or ""):
+        zone = parse_zone(ob_str)
+    elif not is_buy and "Bearish OB" in (ob_str or ""):
+        zone = parse_zone(ob_str)
     if zone is None:
-        zone = parse_zone(fvg_str)
+        if is_buy and "Bullish FVG" in (fvg_str or ""):
+            zone = parse_zone(fvg_str)
+        elif not is_buy and "Bearish FVG" in (fvg_str or ""):
+            zone = parse_zone(fvg_str)
+    if zone is None:
+        return None
+
+    # OTE check (bonus only)
+    in_ote = False
+    sr = swing_range(candles)
+    if sr:
+        lo, hi = sr
+        rng = hi - lo
+        mid_z = (zone[0] + zone[1]) / 2
+        if is_buy:
+            ote_lo, ote_hi = hi - OTE_HIGH * rng, hi - OTE_LOW * rng
+            in_ote = ote_lo <= mid_z <= ote_hi
+        else:
+            ote_lo, ote_hi = lo + OTE_LOW * rng, lo + OTE_HIGH * rng
+            in_ote = ote_lo <= mid_z <= ote_hi
 
     highs = [c["high"] for c in candles]
     lows = [c["low"] for c in candles]
     sh, sl_pts = find_swings(np.array(highs), np.array(lows), 2, 2)
 
+    entry = round((zone[0] + zone[1]) / 2, 2)
+
     if is_buy:
-        if zone:
-            entry = round((zone[0] + zone[1]) / 2, 2)
-            if entry > current:
-                entry = round(min(zone[1], current - atr * ENTRY_ATR_FALLBACK), 2)
-            struct_sl = zone[0] - atr * 0.15
-        else:
-            entry = round(current - atr * ENTRY_ATR_FALLBACK, 2)
-            struct_sl = entry - atr * 0.85
+        if entry >= current:
+            entry = round(min(zone[1], current - atr * ENTRY_ATR_FALLBACK), 2)
+        if entry >= current:
+            return None
+        struct_sl = zone[0] - atr * 0.15
         if sl_pts:
             struct_sl = min(struct_sl, sl_pts[-1][1] - atr * 0.1)
-        sl_dist = entry - struct_sl if struct_sl < entry else atr * 0.85
-    else:
-        if zone:
-            entry = round((zone[0] + zone[1]) / 2, 2)
-            if entry < current:
-                entry = round(max(zone[0], current + atr * ENTRY_ATR_FALLBACK), 2)
-            struct_sl = zone[1] + atr * 0.15
-        else:
-            entry = round(current + atr * ENTRY_ATR_FALLBACK, 2)
-            struct_sl = entry + atr * 0.85
-        if sh:
-            struct_sl = max(struct_sl, sh[-1][1] + atr * 0.1)
-        sl_dist = struct_sl - entry if struct_sl > entry else atr * 0.85
-
-    sl_dist = abs(sl_dist)
-    if sl_dist > MAX_SL_USD:
-        return None  # struktur terlalu lebar untuk scalp
-    sl_dist = max(MIN_SL_USD, min(sl_dist, MAX_SL_USD))
-
-    if is_buy:
+        raw_dist = abs(entry - struct_sl)
+        if raw_dist > MAX_SL_USD:
+            return None
+        sl_dist = max(MIN_SL_USD, min(raw_dist, MAX_SL_USD))
         sl = round(entry - sl_dist, 2)
         tp1 = round(entry + sl_dist * TP1_RR, 2)
         tp2 = round(entry + sl_dist * TP2_RR, 2)
+        if tp1 <= current:
+            return None
     else:
+        if entry <= current:
+            entry = round(max(zone[0], current + atr * ENTRY_ATR_FALLBACK), 2)
+        if entry <= current:
+            return None
+        struct_sl = zone[1] + atr * 0.15
+        if sh:
+            struct_sl = max(struct_sl, sh[-1][1] + atr * 0.1)
+        raw_dist = abs(struct_sl - entry)
+        if raw_dist > MAX_SL_USD:
+            return None
+        sl_dist = max(MIN_SL_USD, min(raw_dist, MAX_SL_USD))
         sl = round(entry + sl_dist, 2)
         tp1 = round(entry - sl_dist * TP1_RR, 2)
         tp2 = round(entry - sl_dist * TP2_RR, 2)
-
-    if is_buy and entry > current + atr * 0.5:
-        return None
-    if not is_buy and entry < current - atr * 0.5:
-        return None
+        if tp1 >= current:
+            return None
 
     return {
         "entry": entry, "sl": sl, "tp1": tp1, "tp2": tp2,
-        "rrr": f"1:{TP1_RR}", "sl_dist": round(sl_dist, 2)
+        "rrr": f"1:{TP1_RR}", "sl_dist": round(sl_dist, 2),
+        "in_ote": in_ote,
+        "quality": "OTE+ZONE" if in_ote else "ZONE"
     }
 
 def make_pattern_key(smc: dict) -> str:
@@ -299,7 +328,7 @@ def record_trade_result(trade: Dict):
         learning_stats["by_pattern"][pattern]["sl"] += 1
         learning_stats["by_pattern"][pattern]["last_result"] = "SL"
         result = "SL"
-    elif "MISS ENTRY" in status:
+    elif "MISS ENTRY" in status or "INVALIDATED" in status or "INVALID SETUP" in status:
         learning_stats["miss_entries"] = learning_stats.get("miss_entries", 0) + 1
         learning_stats["by_pattern"][pattern]["miss"] += 1
         learning_stats["by_pattern"][pattern]["last_result"] = "MISS"
@@ -314,20 +343,6 @@ def record_trade_result(trade: Dict):
         last_two = [r for r in recent if r["pattern"] == pattern][:2]
         if len(last_two) >= 2 and all(r["result"] == "SL" for r in last_two):
             learning_stats.setdefault("blocked_patterns", {})[pattern] = 3
-    blocked = learning_stats.get("blocked_patterns", {})
-    for k in list(blocked.keys()):
-        if k != pattern:
-            blocked[k] = max(0, blocked[k] - 1)
-            if blocked[k] <= 0:
-                del blocked[k]
-    learning_stats["blocked_patterns"] = blocked
-    closed = learning_stats["tp_hits"] + learning_stats["sl_hits"]
-    if closed >= 5:
-        wr = learning_stats["tp_hits"] / closed
-        if wr >= 0.58:
-            learning_stats["score_adjust"] = min(6, learning_stats.get("score_adjust", 0) + 1)
-        elif wr <= 0.42:
-            learning_stats["score_adjust"] = max(-6, learning_stats.get("score_adjust", 0) - 1)
     save_learning()
 
 def apply_learning_to_score(base_score: int, pattern_key: str) -> Tuple[int, str]:
@@ -347,9 +362,6 @@ def apply_learning_to_score(base_score: int, pattern_key: str) -> Tuple[int, str
             elif wr <= 0.35:
                 score -= 12
                 notes.append("pattern_weak")
-            if p["sl"] >= 3 and p["tp"] == 0:
-                score -= 15
-                notes.append("pattern_all_sl")
     return max(0, min(98, int(score))), (",".join(notes) if notes else "neutral")
 
 def get_dynamic_min_score() -> int:
@@ -486,24 +498,15 @@ def analyze_pure_smc(candles, htf_candles=None):
     else:
         score_detail["htf_alignment"] = 4
     score += score_detail["htf_alignment"]
-    if confluence_quality == "clean":
-        score += 10
-        score_detail["confluence_bonus"] = 10
-    elif confluence_quality == "partial":
-        score += 4
-        score_detail["confluence_bonus"] = 4
-    else:
-        score_detail["confluence_bonus"] = 0
+    score_detail["confluence_bonus"] = 10 if confluence_quality == "clean" else (4 if confluence_quality == "partial" else 0)
+    score += score_detail["confluence_bonus"]
 
-    smc_tmp = {
-        "bias": bias, "htf_bias": htf_bias, "confluence_quality": confluence_quality,
-        "order_block": ob, "fvg": fvg, "liquidity": liq
-    }
+    smc_tmp = {"bias": bias, "htf_bias": htf_bias, "confluence_quality": confluence_quality,
+               "order_block": ob, "fvg": fvg, "liquidity": liq}
     pattern_key = make_pattern_key(smc_tmp)
     learned_score, learn_note = apply_learning_to_score(score, pattern_key)
     score = learned_score
     score_detail["learning"] = learn_note
-
     min_sc = get_dynamic_min_score()
     score_label = "HIGH" if score >= 84 else ("MEDIUM" if score >= min_sc else "LOW")
 
@@ -515,9 +518,9 @@ def analyze_pure_smc(candles, htf_candles=None):
     elif not has_structure:
         setup = "WAIT - NO CLEAR STRUCTURE"
     elif bias == "BULLISH" and score >= min_sc and confluence_quality in ("clean", "partial") and (ob_aligned or fvg_aligned):
-        setup = "BUY LIMIT (OTE)"
+        setup = "BUY LIMIT (ZONE)"
     elif bias == "BEARISH" and score >= min_sc and confluence_quality in ("clean", "partial") and (ob_aligned or fvg_aligned):
-        setup = "SELL LIMIT (OTE)"
+        setup = "SELL LIMIT (ZONE)"
 
     return {
         "bias": bias, "bos_choch": structure, "order_block": ob, "fvg": fvg,
@@ -545,7 +548,6 @@ def fetch_high_impact():
     return fundamental_cache["data"] or []
 
 def analyze_fundamental_xau():
-    """News hanya peringatan — tidak memblokir sinyal."""
     events = fetch_high_impact()
     now = datetime.now(timezone.utc)
     critical = ["nonfarm", "nfp", "payroll", "cpi", "core cpi", "pce", "fomc", "interest rate",
@@ -565,51 +567,35 @@ def analyze_fundamental_xau():
                     min_m, next_ev = mins, info
         except:
             continue
-
     if not next_ev:
         return {
-            "scalping_status": "SAFE FOR SCALPING",
-            "risk_level": "LOW",
+            "scalping_status": "SAFE FOR SCALPING", "risk_level": "LOW",
             "recommendation": "Tidak ada High Impact. Scalping aman.",
-            "next_high_impact": "None",
-            "minutes_until_next": None,
-            "upcoming_events": [],
-            "warning_only": True
+            "next_high_impact": "None", "minutes_until_next": None,
+            "upcoming_events": [], "warning_only": True
         }
-
     if next_ev["minutes_left"] <= 60:
         return {
-            "scalping_status": "⚠ WARNING - HIGH IMPACT SOON",
-            "risk_level": "HIGH",
+            "scalping_status": "⚠ WARNING - HIGH IMPACT SOON", "risk_level": "HIGH",
             "recommendation": f"PERINGATAN: {next_ev['name']} dalam {next_ev['minutes_left']} menit. Sinyal tetap aktif — kelola risk manual.",
-            "next_high_impact": next_ev["name"],
-            "minutes_until_next": next_ev["minutes_left"],
-            "upcoming_events": upcoming[:4],
-            "warning_only": True
+            "next_high_impact": next_ev["name"], "minutes_until_next": next_ev["minutes_left"],
+            "upcoming_events": upcoming[:4], "warning_only": True
         }
-
-    if next_ev["minutes_until_next"] if False else next_ev["minutes_left"] <= 120:
+    if next_ev["minutes_left"] <= 120:
         return {
-            "scalping_status": "⚠ CAUTION - NEWS WITHIN 2H",
-            "risk_level": "MEDIUM",
+            "scalping_status": "⚠ CAUTION - NEWS WITHIN 2H", "risk_level": "MEDIUM",
             "recommendation": f"Hati-hati: {next_ev['name']} dalam {round(next_ev['minutes_left']/60, 1)} jam. Sinyal tidak diblokir.",
-            "next_high_impact": next_ev["name"],
-            "minutes_until_next": next_ev["minutes_left"],
-            "upcoming_events": upcoming[:4],
-            "warning_only": True
+            "next_high_impact": next_ev["name"], "minutes_until_next": next_ev["minutes_left"],
+            "upcoming_events": upcoming[:4], "warning_only": True
         }
-
     return {
-        "scalping_status": "SAFE FOR SCALPING",
-        "risk_level": "LOW",
+        "scalping_status": "SAFE FOR SCALPING", "risk_level": "LOW",
         "recommendation": f"Aman. Next event masih {round(next_ev['minutes_left']/60, 1)} jam lagi.",
-        "next_high_impact": next_ev["name"],
-        "minutes_until_next": next_ev["minutes_left"],
-        "upcoming_events": upcoming[:4],
-        "warning_only": True
+        "next_high_impact": next_ev["name"], "minutes_until_next": next_ev["minutes_left"],
+        "upcoming_events": upcoming[:4], "warning_only": True
     }
 
-def manage_trades(symbol: str, current_price: float):
+def manage_trades(symbol: str, current_price: float, current_bias: Optional[str] = None):
     global trade_history
     changed = False
     sym = norm_symbol(symbol)
@@ -618,9 +604,46 @@ def manage_trades(symbol: str, current_price: float):
             continue
         entry, sl, tp1 = float(t["entry"]), float(t["sl"]), float(t["tp1"])
         is_buy = "BUY" in t["type"]
+
         if t["status"] == "PENDING ENTRY":
+            if current_bias and current_bias != "NEUTRAL":
+                if is_buy and current_bias == "BEARISH":
+                    t["status"] = "CLOSED - INVALIDATED"
+                    t["close_price"] = str(round(current_price, 2))
+                    t["close_time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    changed = True
+                    record_trade_result(t)
+                    continue
+                if not is_buy and current_bias == "BULLISH":
+                    t["status"] = "CLOSED - INVALIDATED"
+                    t["close_price"] = str(round(current_price, 2))
+                    t["close_time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    changed = True
+                    record_trade_result(t)
+                    continue
+
             filled = (is_buy and current_price <= entry) or (not is_buy and current_price >= entry)
-            missed = (is_buy and current_price >= tp1) or (not is_buy and current_price <= tp1)
+            if is_buy:
+                missed = (not filled) and (current_price >= tp1) and (entry < tp1)
+            else:
+                missed = (not filled) and (current_price <= tp1) and (entry > tp1)
+
+            create_px = float(t.get("create_price") or entry)
+            if is_buy and missed and create_px >= tp1:
+                t["status"] = "CLOSED - INVALID SETUP"
+                t["close_price"] = str(round(current_price, 2))
+                t["close_time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                changed = True
+                record_trade_result(t)
+                continue
+            if not is_buy and missed and create_px <= tp1:
+                t["status"] = "CLOSED - INVALID SETUP"
+                t["close_price"] = str(round(current_price, 2))
+                t["close_time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                changed = True
+                record_trade_result(t)
+                continue
+
             if filled:
                 t["status"] = "FILLED & ACTIVE"
                 t["fill_time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -632,6 +655,7 @@ def manage_trades(symbol: str, current_price: float):
                 t["close_time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 changed = True
                 record_trade_result(t)
+
         elif t["status"] == "FILLED & ACTIVE":
             hit = None
             if is_buy:
@@ -676,13 +700,13 @@ async def get_signal(
         candles = fetch_candles(decoded, timeframe, force=False)
     if not candles:
         raise HTTPException(503, detail="Market data unavailable (biquote OHLC).")
-
     if current_price > 0:
         candles[-1]["close"] = current_price
 
     htf_candles = fetch_candles(decoded, "1h", outputsize=80, force=False)
     last_candle_time = candles[-1]["datetime"]
-    manage_trades(decoded, current_price)
+    smc_preview = analyze_pure_smc(candles, htf_candles)
+    manage_trades(decoded, current_price, current_bias=smc_preview.get("bias"))
 
     active = get_active_trade(decoded)
     if active:
@@ -702,8 +726,7 @@ async def get_signal(
             "fundamental_layer": fund,
             "master_decision": {
                 "action": f"{'HOLD' if active['status'] == 'FILLED & ACTIVE' else 'WAITING'} ({active['type']})",
-                "confidence_score": "100%",
-                "execution_status": active["status"]
+                "confidence_score": "100%", "execution_status": active["status"]
             },
             "execution_parameters": {
                 "entry_price": active["entry"], "stop_loss": active["sl"],
@@ -720,10 +743,10 @@ async def get_signal(
                 "sl_hits": learning_stats.get("sl_hits", 0),
                 "total_closed": learning_stats.get("total_closed", 0)
             },
-            "ai_rationale": f"Pair: {decoded} | Status: {active['status']} | 1 trade aktif"
+            "ai_rationale": f"Pair: {decoded} | Status: {active['status']}"
         }
 
-    smc = analyze_pure_smc(candles, htf_candles)
+    smc = smc_preview
     fund = analyze_fundamental_xau()
     atr_val = custom_atr if custom_atr and custom_atr > 0 else smc["atr"]
     min_sc = get_dynamic_min_score()
@@ -733,9 +756,9 @@ async def get_signal(
     status = "IDLE"
     entry = sl = tp1 = tp2 = "-"
     rrr = "0.0"
+    zone_quality = ""
 
-    # --- NEWS TIDAK MEMBLOKIR ---
-    # fund hanya ditampilkan sebagai warning di fundamental_layer
+    # News = warning only (tidak block)
 
     if "HTF CONFLICT" in action or "NO CLEAR STRUCTURE" in action or "LEARNING BLOCK" in action:
         status = action.replace("WAIT - ", "")
@@ -748,11 +771,15 @@ async def get_signal(
             smc["order_block"], smc["fvg"], candles
         )
         if levels is None:
-            action = "WAIT - SL TOO WIDE / INVALID ZONE"
-            status = "RISK REJECT"
+            action = "WAIT - NO VALID ZONE / RISK"
+            status = "ZONE OR RISK REJECT"
         else:
             entry, sl, tp1, tp2 = levels["entry"], levels["sl"], levels["tp1"], levels["tp2"]
             rrr = levels["rrr"]
+            zone_quality = levels.get("quality", "ZONE")
+            if levels.get("in_ote"):
+                confidence = min(98, confidence + 6)
+                action = action.replace("(ZONE)", "(OTE+ZONE)")
             if is_same_entry_zone(decoded, float(entry), atr_val):
                 action, status = "WAIT - SAME ENTRY ZONE", "DUPLICATE ZONE"
                 entry = sl = tp1 = tp2 = "-"
@@ -766,6 +793,8 @@ async def get_signal(
             "symbol": decoded, "type": action,
             "entry": str(entry), "sl": str(sl), "tp1": str(tp1), "tp2": str(tp2),
             "rrr": rrr, "status": status, "atr_used": atr_val,
+            "create_price": str(round(current_price, 2)),
+            "zone_quality": zone_quality,
             "order_block": smc["order_block"], "entry_reason": smc["entry_reason"],
             "bias": smc["bias"], "htf_bias": smc["htf_bias"],
             "score": smc["score"], "score_label": smc["score_label"],
@@ -775,13 +804,14 @@ async def get_signal(
         trade_history.insert(0, new_trade)
         save_history()
 
-    # Tambahan teks warning di rationale jika ada news dekat
     rationale = (
-        f"v12.3 | {decoded} | Score {smc['score']} | {smc['confluence_quality']} | "
-        f"HTF {smc['htf_bias']} | Max SL ${MAX_SL_USD} (~80 pips) | TP1 {TP1_RR}R"
+        f"v12.5 | {decoded} | Score {confidence} | {smc['confluence_quality']} | "
+        f"HTF {smc['htf_bias']} | Zone-first (OTE bonus) | Max SL ${MAX_SL_USD}"
     )
+    if zone_quality:
+        rationale += f" | {zone_quality}"
     if fund.get("risk_level") in ("HIGH", "MEDIUM"):
-        rationale += f" | ⚠ NEWS: {fund.get('next_high_impact', '')} ({fund.get('minutes_until_next')}m)"
+        rationale += f" | ⚠ NEWS: {fund.get('next_high_impact')} ({fund.get('minutes_until_next')}m)"
 
     return {
         "symbol": decoded, "timeframe": timeframe,
@@ -806,7 +836,8 @@ async def get_signal(
             "current_price": str(round(current_price, 2)),
             "price_source": price_data.get("source", "biquote"),
             "last_candle_time": last_candle_time,
-            "entry_reason": smc["entry_reason"]
+            "entry_reason": smc["entry_reason"],
+            "zone_quality": zone_quality or "-"
         },
         "learning": {
             "score_adjust": learning_stats.get("score_adjust", 0),
@@ -832,8 +863,6 @@ async def learning_stats_endpoint():
         "miss_entries": learning_stats.get("miss_entries", 0),
         "score_adjust": learning_stats.get("score_adjust", 0),
         "min_score_now": get_dynamic_min_score(),
-        "blocked_patterns": learning_stats.get("blocked_patterns", {}),
-        "by_pattern": learning_stats.get("by_pattern", {}),
         "recent_results": learning_stats.get("recent_results", [])[:10],
         "last_update": learning_stats.get("last_update")
     }
@@ -857,14 +886,13 @@ async def reset_history():
 async def health():
     return {
         "status": "healthy",
-        "version": "12.3",
+        "version": "12.5",
         "data_source": "biquote.io",
         "max_sl_usd": MAX_SL_USD,
-        "max_sl_pips_approx": 80,
-        "tp1_rr": TP1_RR,
+        "entry_mode": "zone_first_ote_bonus",
+        "miss_entry_fixed": True,
         "news_blocks_signal": False,
         "trades": len(trade_history),
-        "learning_adjust": learning_stats.get("score_adjust", 0),
         "min_score": get_dynamic_min_score()
     }
 
