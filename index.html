@@ -3,258 +3,236 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>APEX // SMC</title>
+  <title>Apex SMC</title>
   <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" />
-  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;700&family=Share+Tech+Mono&display=swap" rel="stylesheet" />
   <style>
     :root {
-      --bg: #050510;
-      --cyan: #00f0ff;
-      --magenta: #ff00aa;
-      --lime: #b8ff00;
-      --panel: rgba(8, 12, 28, 0.9);
+      --bg: #06080f;
+      --card: rgba(14, 18, 32, 0.72);
+      --line: rgba(255,255,255,0.06);
+      --gold: #e8b86d;
+      --mint: #34d399;
+      --rose: #fb7185;
     }
     * { box-sizing: border-box; }
     body {
-      font-family: 'Share Tech Mono', monospace;
+      font-family: 'DM Sans', system-ui, sans-serif;
       background: var(--bg);
       background-image:
-        linear-gradient(rgba(0, 240, 255, 0.03) 1px, transparent 1px),
-        linear-gradient(90deg, rgba(0, 240, 255, 0.03) 1px, transparent 1px),
-        radial-gradient(ellipse at 20% 0%, rgba(255, 0, 170, 0.12), transparent 50%),
-        radial-gradient(ellipse at 80% 100%, rgba(0, 240, 255, 0.1), transparent 45%);
-      background-size: 40px 40px, 40px 40px, 100% 100%, 100% 100%;
+        radial-gradient(ellipse 90% 60% at 50% -30%, rgba(232, 184, 109, 0.14), transparent 55%),
+        radial-gradient(ellipse 50% 40% at 100% 80%, rgba(52, 211, 153, 0.06), transparent),
+        radial-gradient(ellipse 40% 30% at 0% 60%, rgba(99, 102, 241, 0.07), transparent);
       min-height: 100vh;
-      color: #c8d6e5;
+      color: #e8eaef;
     }
-    .title-font { font-family: 'Orbitron', sans-serif; }
-    .panel {
-      background: var(--panel);
-      border: 1px solid rgba(0, 240, 255, 0.2);
-      box-shadow:
-        0 0 20px rgba(0, 240, 255, 0.05),
-        inset 0 0 30px rgba(0, 240, 255, 0.02);
+    .mono { font-family: 'JetBrains Mono', monospace; }
+    .card {
+      background: var(--card);
+      backdrop-filter: blur(18px);
+      border: 1px solid var(--line);
+      border-radius: 1.25rem;
     }
-    .neon-cyan { color: var(--cyan); text-shadow: 0 0 10px rgba(0, 240, 255, 0.7); }
-    .neon-mag { color: var(--magenta); text-shadow: 0 0 10px rgba(255, 0, 170, 0.7); }
-    .neon-lime { color: var(--lime); text-shadow: 0 0 8px rgba(184, 255, 0, 0.5); }
-    .glow-buy {
-      border-color: rgba(184, 255, 0, 0.45) !important;
-      box-shadow: 0 0 30px rgba(184, 255, 0, 0.2), inset 0 0 20px rgba(184, 255, 0, 0.05);
-    }
-    .glow-sell {
-      border-color: rgba(255, 0, 170, 0.5) !important;
-      box-shadow: 0 0 30px rgba(255, 0, 170, 0.25), inset 0 0 20px rgba(255, 0, 170, 0.05);
-    }
-    .glow-wait {
-      border-color: rgba(0, 240, 255, 0.45) !important;
-      box-shadow: 0 0 28px rgba(0, 240, 255, 0.2), inset 0 0 16px rgba(0, 240, 255, 0.05);
-    }
-    @keyframes scan {
-      0% { transform: translateY(-100%); opacity: 0; }
-      50% { opacity: 0.4; }
-      100% { transform: translateY(100vh); opacity: 0; }
-    }
-    .scanline {
-      position: fixed; left: 0; right: 0; height: 80px;
-      background: linear-gradient(transparent, rgba(0, 240, 255, 0.04), transparent);
-      pointer-events: none; z-index: 100; animation: scan 8s linear infinite;
-    }
-    @keyframes blink {
-      0%, 100% { opacity: 1; } 50% { opacity: 0.35; }
-    }
-    .blink { animation: blink 1.4s step-end infinite; }
-    @keyframes in {
-      from { opacity: 0; transform: translateY(10px); }
+    .glow-buy { box-shadow: 0 0 48px rgba(52, 211, 153, 0.18), 0 0 0 1px rgba(52, 211, 153, 0.2); }
+    .glow-sell { box-shadow: 0 0 48px rgba(251, 113, 133, 0.18), 0 0 0 1px rgba(251, 113, 133, 0.2); }
+    .glow-wait { box-shadow: 0 0 40px rgba(99, 102, 241, 0.15), 0 0 0 1px rgba(99, 102, 241, 0.18); }
+    @keyframes rise {
+      from { opacity: 0; transform: translateY(14px); }
       to { opacity: 1; transform: translateY(0); }
     }
-    .in { animation: in 0.4s ease-out forwards; }
+    .rise { animation: rise 0.45s cubic-bezier(0.22, 1, 0.36, 1) forwards; }
+    @keyframes softpulse {
+      0%, 100% { opacity: 1; } 50% { opacity: 0.45; }
+    }
+    .dot-live { animation: softpulse 1.6s ease-in-out infinite; }
     #bar {
-      height: 3px;
-      background: linear-gradient(90deg, var(--cyan), var(--magenta), var(--lime));
+      height: 2px;
+      background: linear-gradient(90deg, #e8b86d, #34d399, #818cf8);
       transition: width 1s linear;
-      box-shadow: 0 0 12px var(--cyan);
+      border-radius: 2px;
     }
     input, select {
-      background: #0a0e1a;
-      border: 1px solid rgba(0, 240, 255, 0.25);
-      color: var(--cyan);
-      border-radius: 4px;
+      background: rgba(8, 12, 22, 0.9);
+      border: 1px solid var(--line);
+      border-radius: 0.75rem;
+      color: #e8eaef;
       outline: none;
-      font-family: inherit;
+      font-size: 0.875rem;
     }
-    input:focus, select:focus {
-      border-color: var(--cyan);
-      box-shadow: 0 0 12px rgba(0, 240, 255, 0.3);
+    input:focus, select:focus { border-color: rgba(232, 184, 109, 0.45); }
+    .btn {
+      background: linear-gradient(135deg, #e8b86d, #c9923a);
+      color: #1a1208;
+      font-weight: 600;
+      border-radius: 0.75rem;
+      box-shadow: 0 8px 24px rgba(232, 184, 109, 0.25);
+      transition: transform 0.15s, box-shadow 0.15s;
     }
-    .btn-run {
-      background: transparent;
-      border: 1px solid var(--cyan);
-      color: var(--cyan);
-      text-shadow: 0 0 8px rgba(0, 240, 255, 0.6);
-      box-shadow: 0 0 15px rgba(0, 240, 255, 0.15);
-      transition: all 0.2s;
-      font-family: 'Orbitron', sans-serif;
-      letter-spacing: 0.08em;
-    }
-    .btn-run:hover {
-      background: rgba(0, 240, 255, 0.12);
-      box-shadow: 0 0 25px rgba(0, 240, 255, 0.35);
-    }
-    .chip {
-      font-size: 10px;
-      padding: 3px 8px;
-      border: 1px solid;
+    .btn:hover { transform: translateY(-1px); box-shadow: 0 12px 28px rgba(232, 184, 109, 0.35); }
+    .btn:active { transform: scale(0.98); }
+    .pill {
+      font-size: 0.65rem;
+      font-weight: 600;
       letter-spacing: 0.04em;
       text-transform: uppercase;
+      padding: 0.25rem 0.65rem;
+      border-radius: 999px;
     }
     .label {
-      font-size: 10px;
-      letter-spacing: 0.2em;
+      font-size: 0.65rem;
+      font-weight: 600;
+      letter-spacing: 0.12em;
       text-transform: uppercase;
-      color: rgba(0, 240, 255, 0.45);
+      color: rgba(232, 234, 239, 0.35);
     }
-    tr:hover td { background: rgba(0, 240, 255, 0.03); }
-    ::-webkit-scrollbar { width: 5px; height: 5px; }
-    ::-webkit-scrollbar-thumb { background: rgba(0, 240, 255, 0.3); }
+    tr:hover td { background: rgba(255,255,255,0.02); }
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-thumb { background: #2a3148; border-radius: 3px; }
   </style>
 </head>
 <body>
-  <div class="scanline"></div>
 
-  <header class="sticky top-0 z-50 border-b border-cyan-500/20 bg-[#050510]/95 backdrop-blur-md">
-    <div class="max-w-[1400px] mx-auto px-4 py-3 flex flex-wrap items-center justify-between gap-3">
-      <div class="flex items-center gap-3">
-        <div class="w-9 h-9 border border-cyan-400/50 flex items-center justify-center"
-             style="box-shadow: 0 0 15px rgba(0,240,255,0.3)">
-          <span class="neon-cyan title-font text-sm font-bold">A</span>
-        </div>
-        <div>
-          <div class="title-font text-sm font-bold tracking-widest neon-cyan">APEX // SMC</div>
-          <div class="text-[10px] text-cyan-500/50 tracking-wider">NEURAL ORDER FLOW</div>
-        </div>
+<header class="sticky top-0 z-50 border-b border-white/5 bg-[#06080f]/85 backdrop-blur-xl">
+  <div class="max-w-6xl mx-auto px-4 sm:px-6 py-3.5 flex flex-wrap items-center justify-between gap-3">
+    <div class="flex items-center gap-3">
+      <div class="w-10 h-10 rounded-2xl bg-gradient-to-br from-[#e8b86d] to-[#a67c2e] flex items-center justify-center shadow-lg shadow-amber-900/30">
+        <i class="fas fa-chart-line text-white text-sm"></i>
       </div>
-      <div class="flex items-center gap-2 flex-wrap">
-        <input id="symbol" value="XAU/USD" class="px-2.5 py-1.5 text-sm w-[95px]" />
-        <select id="timeframe" class="px-2.5 py-1.5 text-sm">
-          <option value="1min">1M</option>
-          <option value="5min" selected>5M</option>
-          <option value="15min">15M</option>
-          <option value="1h">1H</option>
-        </select>
-        <button onclick="fetchSignal(true)" class="btn-run px-4 py-1.5 text-xs font-semibold">
-          ▶ RUN
-        </button>
-        <div class="flex items-center gap-2 px-3 py-1.5 border border-cyan-500/20 text-sm">
-          <span class="w-1.5 h-1.5 rounded-full bg-cyan-400 blink"></span>
-          <span id="countdown" class="neon-cyan font-bold">60</span>
-          <span class="text-cyan-700 text-xs">SEC</span>
+      <div>
+        <div class="font-semibold tracking-tight text-[15px]">Apex SMC</div>
+        <div class="text-[11px] text-white/30 flex items-center gap-1.5">
+          <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 dot-live"></span>
+          Order flow · Live
         </div>
       </div>
     </div>
-    <div class="h-[3px] bg-black">
-      <div id="bar" style="width:100%"></div>
-    </div>
-  </header>
-
-  <main class="max-w-[1400px] mx-auto px-4 py-5 space-y-4">
-    <div id="status" class="hidden text-center text-sm text-cyan-500/70 py-2"></div>
-
-    <section id="hero" class="hidden grid grid-cols-1 lg:grid-cols-12 gap-3">
-      <div id="decision-box" class="lg:col-span-5 panel p-5 in relative">
-        <div class="label mb-2">// DECISION</div>
-        <h2 id="action" class="title-font text-xl sm:text-2xl font-bold tracking-wide mb-2 leading-tight neon-cyan">—</h2>
-        <p id="confidence" class="text-magenta-400 text-base mb-3" style="color:#ff00aa;text-shadow:0 0 8px rgba(255,0,170,0.5)">—</p>
-        <div class="flex flex-wrap gap-2 mb-4">
-          <span id="status-badge" class="chip border-cyan-500/40 text-cyan-400">IDLE</span>
-          <span id="symbol-display" class="chip border-white/10 text-slate-500"></span>
-        </div>
-        <div class="pt-3 border-t border-cyan-500/10">
-          <div class="label mb-1">STRUCTURE</div>
-          <p id="structure" class="text-sm">—</p>
-        </div>
+    <div class="flex items-center gap-2 flex-wrap">
+      <input id="symbol" value="XAU/USD" class="px-3 py-2 w-[100px] mono" />
+      <select id="timeframe" class="px-3 py-2">
+        <option value="1min">1m</option>
+        <option value="5min" selected>5m</option>
+        <option value="15min">15m</option>
+        <option value="1h">1H</option>
+      </select>
+      <button onclick="fetchSignal(true)" class="btn px-4 py-2 text-sm">
+        <i class="fas fa-bolt mr-1.5 text-xs"></i>Analyze
+      </button>
+      <div class="flex items-center gap-2 card px-3 py-2 text-sm">
+        <span id="countdown" class="mono font-semibold text-[#e8b86d]">60</span>
+        <span class="text-white/30 text-xs">sec</span>
       </div>
+    </div>
+  </div>
+  <div class="h-[2px] bg-white/5"><div id="bar" style="width:100%"></div></div>
+</header>
 
-      <div class="lg:col-span-7 grid grid-cols-2 sm:grid-cols-4 gap-3">
-        <div class="panel p-4 col-span-2 sm:col-span-4 in">
-          <div class="label mb-2">// FUNDAMENTAL</div>
-          <p id="fund-status" class="text-base font-semibold neon-cyan">—</p>
-          <p id="fund-recommendation" class="text-sm text-slate-400 mt-1">—</p>
-          <div class="mt-3 grid grid-cols-2 gap-2 text-sm">
-            <div class="border border-cyan-500/10 px-2.5 py-2">
-              <div class="label">NEXT EVENT</div>
-              <p id="next-event" class="truncate">—</p>
-            </div>
-            <div class="border border-cyan-500/10 px-2.5 py-2">
-              <div class="label">ETA</div>
-              <p id="time-remaining">—</p>
-            </div>
+<main class="max-w-6xl mx-auto px-4 sm:px-6 py-6 space-y-4">
+  <div id="status" class="hidden text-center text-sm text-white/40 py-1"></div>
+
+  <section id="hero" class="hidden grid grid-cols-1 lg:grid-cols-12 gap-4">
+    <!-- Decision -->
+    <div id="decision-box" class="lg:col-span-4 card p-6 rise relative overflow-hidden">
+      <div class="absolute -top-8 -right-8 w-32 h-32 rounded-full bg-[#e8b86d]/5 blur-2xl pointer-events-none"></div>
+      <p class="label mb-3">Decision</p>
+      <h2 id="action" class="text-2xl font-bold tracking-tight leading-snug mb-2">—</h2>
+      <p id="confidence" class="text-[#e8b86d] text-lg font-medium mb-4">—</p>
+      <div class="flex flex-wrap gap-2 mb-5">
+        <span id="status-badge" class="pill bg-white/5 text-white/50">Idle</span>
+        <span id="symbol-display" class="pill bg-white/5 text-white/35"></span>
+      </div>
+      <div class="pt-4 border-t border-white/5">
+        <p class="label mb-1">Structure</p>
+        <p id="structure" class="text-sm font-medium text-white/80">—</p>
+      </div>
+    </div>
+
+    <!-- Right stack -->
+    <div class="lg:col-span-8 space-y-4">
+      <div class="card p-5 rise">
+        <div class="flex items-center gap-2 mb-2">
+          <i class="fas fa-newspaper text-[#e8b86d] text-xs"></i>
+          <span class="text-sm font-medium">Fundamental</span>
+        </div>
+        <p id="fund-status" class="text-base font-semibold">—</p>
+        <p id="fund-recommendation" class="text-sm text-white/45 mt-1 leading-relaxed">—</p>
+        <div class="mt-4 grid grid-cols-2 gap-3">
+          <div class="rounded-xl bg-white/[0.03] px-3 py-2.5">
+            <p class="label">Next event</p>
+            <p id="next-event" class="text-sm font-medium truncate mt-0.5">—</p>
+          </div>
+          <div class="rounded-xl bg-white/[0.03] px-3 py-2.5">
+            <p class="label">ETA</p>
+            <p id="time-remaining" class="text-sm font-medium mono mt-0.5">—</p>
           </div>
         </div>
-        <div class="panel p-3 in"><div class="label mb-1">OB</div><p id="ob" class="text-xs text-slate-300">—</p></div>
-        <div class="panel p-3 in"><div class="label mb-1">FVG</div><p id="fvg" class="text-xs text-slate-300">—</p></div>
-        <div class="panel p-3 in"><div class="label mb-1">LIQ</div><p id="liquidity" class="text-xs text-slate-300">—</p></div>
-        <div class="panel p-3 in"><div class="label mb-1">BIAS</div><p id="bias" class="text-sm font-semibold">—</p></div>
       </div>
-    </section>
 
-    <section id="reason-card" class="hidden panel p-4 in">
-      <div class="label mb-2">// ENTRY REASON</div>
-      <div id="entry-reason-summary" class="text-sm space-y-0.5 mb-2">—</div>
-      <div id="entry-reason-badges" class="flex flex-wrap gap-1.5"></div>
-      <p id="entry-reason-warning" class="hidden mt-2 text-xs border border-magenta-500/40 px-3 py-2" style="color:#ff00aa;background:rgba(255,0,170,0.08)"></p>
-    </section>
-
-    <section id="exec-card" class="hidden panel p-4 in">
-      <div class="label mb-3">// EXECUTION</div>
-      <div class="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-2">
-        <div class="border border-cyan-500/15 p-2.5 text-center">
-          <div class="label">PRICE</div>
-          <p id="current-price" class="neon-cyan font-bold text-base">—</p>
-        </div>
-        <div class="border border-cyan-500/15 p-2.5 text-center"><div class="label">ENTRY</div><p id="entry" class="text-sm">—</p></div>
-        <div class="border border-cyan-500/15 p-2.5 text-center"><div class="label">SL</div><p id="sl" class="text-sm neon-mag">—</p></div>
-        <div class="border border-cyan-500/15 p-2.5 text-center"><div class="label">TP1</div><p id="tp1" class="text-sm neon-lime">—</p></div>
-        <div class="border border-cyan-500/15 p-2.5 text-center"><div class="label">TP2</div><p id="tp2" class="text-sm neon-lime">—</p></div>
-        <div class="border border-cyan-500/15 p-2.5 text-center"><div class="label">R:R</div><p id="rrr" class="text-sm">—</p></div>
-        <div class="border border-cyan-500/15 p-2.5 text-center"><div class="label">ATR</div><p id="atr-used" class="text-sm">—</p></div>
-        <div class="border border-cyan-500/15 p-2.5 text-center"><div class="label">CANDLE</div><p id="last-candle" class="text-[10px] text-slate-500">—</p></div>
+      <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <div class="card p-4 rise"><p class="label mb-1.5">Order Block</p><p id="ob" class="text-xs text-white/70 leading-snug">—</p></div>
+        <div class="card p-4 rise"><p class="label mb-1.5">FVG</p><p id="fvg" class="text-xs text-white/70 leading-snug">—</p></div>
+        <div class="card p-4 rise"><p class="label mb-1.5">Liquidity</p><p id="liquidity" class="text-xs text-white/70 leading-snug">—</p></div>
+        <div class="card p-4 rise"><p class="label mb-1.5">Bias</p><p id="bias" class="text-sm font-semibold">—</p></div>
       </div>
-    </section>
+    </div>
+  </section>
 
-    <section id="rationale-card" class="hidden panel px-4 py-3">
-      <div class="label mb-1">// RATIONALE</div>
-      <p id="rationale" class="text-sm text-slate-400">—</p>
-    </section>
+  <section id="reason-card" class="hidden card p-5 rise">
+    <p class="label mb-3 flex items-center gap-2"><i class="fas fa-lightbulb text-[#e8b86d]"></i> Alasan Entry</p>
+    <div id="entry-reason-summary" class="text-sm text-white/75 space-y-1 mb-3">—</div>
+    <div id="entry-reason-badges" class="flex flex-wrap gap-1.5"></div>
+    <p id="entry-reason-warning" class="hidden mt-3 text-xs text-[#e8b86d]/90 bg-[#e8b86d]/10 border border-[#e8b86d]/20 rounded-xl px-3 py-2"></p>
+  </section>
 
-    <section class="panel overflow-hidden">
-      <div class="px-4 py-3 border-b border-cyan-500/15 flex justify-between items-center">
-        <span class="label">// HISTORY</span>
-        <button onclick="resetHistory()" class="text-[10px] tracking-wider neon-mag hover:opacity-80">RESET</button>
+  <section id="exec-card" class="hidden card p-5 rise">
+    <p class="label mb-4">Execution</p>
+    <div class="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-2.5">
+      <div class="rounded-xl bg-white/[0.03] p-3 text-center">
+        <p class="label">Price</p>
+        <p id="current-price" class="mono text-[#e8b86d] font-semibold text-base mt-1">—</p>
       </div>
-      <div class="overflow-x-auto">
-        <table class="w-full text-sm">
-          <thead>
-            <tr class="label border-b border-cyan-500/10">
-              <th class="px-3 py-2 text-left font-normal">#</th>
-              <th class="px-3 py-2 text-left font-normal">TIME</th>
-              <th class="px-3 py-2 text-left font-normal">PAIR</th>
-              <th class="px-3 py-2 text-left font-normal">TYPE</th>
-              <th class="px-3 py-2 text-left font-normal">ENTRY</th>
-              <th class="px-3 py-2 text-left font-normal">SL</th>
-              <th class="px-3 py-2 text-left font-normal">TP1</th>
-              <th class="px-3 py-2 text-left font-normal">CLOSE</th>
-              <th class="px-3 py-2 text-left font-normal">STATUS</th>
-            </tr>
-          </thead>
-          <tbody id="history-body">
-            <tr><td colspan="9" class="px-4 py-8 text-center text-cyan-800 text-sm">NO DATA</td></tr>
-          </tbody>
-        </table>
-      </div>
-    </section>
-  </main>
+      <div class="rounded-xl bg-white/[0.03] p-3 text-center"><p class="label">Entry</p><p id="entry" class="mono text-sm mt-1">—</p></div>
+      <div class="rounded-xl bg-white/[0.03] p-3 text-center"><p class="label">SL</p><p id="sl" class="mono text-sm text-rose-400 mt-1">—</p></div>
+      <div class="rounded-xl bg-white/[0.03] p-3 text-center"><p class="label">TP1</p><p id="tp1" class="mono text-sm text-emerald-400 mt-1">—</p></div>
+      <div class="rounded-xl bg-white/[0.03] p-3 text-center"><p class="label">TP2</p><p id="tp2" class="mono text-sm text-emerald-400 mt-1">—</p></div>
+      <div class="rounded-xl bg-white/[0.03] p-3 text-center"><p class="label">R:R</p><p id="rrr" class="mono text-sm mt-1">—</p></div>
+      <div class="rounded-xl bg-white/[0.03] p-3 text-center"><p class="label">ATR</p><p id="atr-used" class="mono text-sm mt-1">—</p></div>
+      <div class="rounded-xl bg-white/[0.03] p-3 text-center"><p class="label">Candle</p><p id="last-candle" class="mono text-[10px] text-white/40 mt-1">—</p></div>
+    </div>
+  </section>
+
+  <section id="rationale-card" class="hidden card px-5 py-3.5">
+    <p class="label mb-1">Rationale</p>
+    <p id="rationale" class="text-sm text-white/45">—</p>
+  </section>
+
+  <section class="card overflow-hidden">
+    <div class="px-5 py-3.5 border-b border-white/5 flex justify-between items-center">
+      <span class="text-sm font-medium text-white/70"><i class="fas fa-clock-rotate-left mr-2 text-white/30"></i>History</span>
+      <button onclick="resetHistory()" class="text-xs text-rose-400/70 hover:text-rose-400 transition">Reset</button>
+    </div>
+    <div class="overflow-x-auto">
+      <table class="w-full text-sm">
+        <thead>
+          <tr class="label border-b border-white/5">
+            <th class="px-4 py-2.5 text-left font-medium">#</th>
+            <th class="px-4 py-2.5 text-left font-medium">Time</th>
+            <th class="px-4 py-2.5 text-left font-medium">Pair</th>
+            <th class="px-4 py-2.5 text-left font-medium">Type</th>
+            <th class="px-4 py-2.5 text-left font-medium">Entry</th>
+            <th class="px-4 py-2.5 text-left font-medium">SL</th>
+            <th class="px-4 py-2.5 text-left font-medium">TP1</th>
+            <th class="px-4 py-2.5 text-left font-medium">Close</th>
+            <th class="px-4 py-2.5 text-left font-medium">Status</th>
+          </tr>
+        </thead>
+        <tbody id="history-body">
+          <tr><td colspan="9" class="px-4 py-10 text-center text-white/20 text-sm">Belum ada trade</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+</main>
 
 <script>
   const API_BASE = "https://apex-smc-production.up.railway.app";
@@ -274,45 +252,44 @@
     const fvg = tech.fair_value_gap || "";
     const liq = tech.liquidity_pool || "";
     const lines = [];
-    if (bias === "BULLISH") lines.push("<strong class='neon-lime'>ARAH:</strong> BULLISH");
-    else if (bias === "BEARISH") lines.push("<strong class='neon-mag'>ARAH:</strong> BEARISH");
-    else lines.push("<strong>ARAH:</strong> NETRAL");
-    if (structure && structure !== "—" && !structure.includes("Trade Active"))
-      lines.push("<strong>STRUKTUR:</strong> " + structure);
+    if (bias === "BULLISH") lines.push("<strong>Arah:</strong> BULLISH");
+    else if (bias === "BEARISH") lines.push("<strong>Arah:</strong> BEARISH");
+    else lines.push("<strong>Arah:</strong> Netral");
+    if (structure && structure !== "—" && !String(structure).includes("Trade Active"))
+      lines.push("<strong>Struktur:</strong> " + structure);
     if (ob && ob !== "None" && ob !== "—") {
       const m = ob.match(/([\d.]+)\s*-\s*([\d.]+)/);
-      lines.push("<strong>OB:</strong> " + (m ? roundP(m[1]) + " – " + roundP(m[2]) : ob));
+      lines.push("<strong>Order Block:</strong> " + (m ? roundP(m[1]) + " – " + roundP(m[2]) : ob));
     }
     if (fvg && !fvg.includes("No Valid") && fvg !== "—") {
       const m = fvg.match(/([\d.]+)\s*-\s*([\d.]+)/);
       lines.push("<strong>FVG:</strong> " + (m ? roundP(m[1]) + " – " + roundP(m[2]) : fvg));
     }
-    if (liq && liq.includes("Swept")) lines.push("<strong>LIQ:</strong> " + liq);
-    if (htf && htf !== "NEUTRAL" && htf !== "—") lines.push("<strong>HTF:</strong> " + htf);
+    if (liq && liq.includes("Swept")) lines.push("<strong>Likuiditas:</strong> " + liq);
+    if (htf && htf !== "NEUTRAL" && htf !== "—") lines.push("<strong>HTF (1H):</strong> " + htf);
     let warning = "";
     if (bias === "BEARISH" && htf === "BULLISH") {
-      lines.push("<strong class='neon-cyan'>OUT:</strong> SELL · HTF naik");
-      warning = "⚠ HTF CONFLICT — CAUTION";
+      lines.push('<strong class="text-[#e8b86d]">Kesimpulan:</strong> Setup SELL, HTF masih naik');
+      warning = "⚠ HTF berlawanan — hati-hati";
     } else if (bias === "BULLISH" && htf === "BEARISH") {
-      lines.push("<strong class='neon-cyan'>OUT:</strong> BUY · HTF turun");
-      warning = "⚠ HTF CONFLICT — CAUTION";
-    } else if (bias === "BEARISH") lines.push("<strong class='neon-cyan'>OUT:</strong> SELL SETUP");
-    else if (bias === "BULLISH") lines.push("<strong class='neon-cyan'>OUT:</strong> BUY SETUP");
-    else lines.push("<strong class='neon-cyan'>OUT:</strong> WAIT");
+      lines.push('<strong class="text-[#e8b86d]">Kesimpulan:</strong> Setup BUY, HTF masih turun');
+      warning = "⚠ HTF berlawanan — hati-hati";
+    } else if (bias === "BEARISH") lines.push('<strong class="text-[#e8b86d]">Kesimpulan:</strong> Setup SELL');
+    else if (bias === "BULLISH") lines.push('<strong class="text-[#e8b86d]">Kesimpulan:</strong> Setup BUY');
+    else lines.push('<strong class="text-[#e8b86d]">Kesimpulan:</strong> Tunggu setup lebih jelas');
     return { html: lines.map(l => "<div>" + l + "</div>").join(""), warning, raw: tech.entry_reason || "" };
   }
 
   function badges(raw) {
     if (!raw || raw === "—" || raw === "No clear confluence") return "";
     return raw.split("+").map(p => p.trim()).filter(Boolean).map(part => {
-      let c = "border-cyan-500/30 text-cyan-400/80";
+      let c = "bg-white/5 text-white/50 border border-white/10";
       const l = part.toLowerCase();
-      if (l.includes("bos") || l.includes("choch")) c = "border-cyan-400/50 text-cyan-300";
-      else if (l.includes("ob")) c = "border-yellow-500/40 text-yellow-300";
-      else if (l.includes("fvg")) c = "border-purple-400/40 text-purple-300";
-      else if (l.includes("swept")) c = "border-lime-400/40 text-lime-300";
-      else if (l.includes("htf")) c = "border-magenta-500/40 text-pink-300";
-      return '<span class="chip ' + c + '">' + part.replace(/(\d+\.\d{2})\d+/g, "$1") + "</span>";
+      if (l.includes("bos") || l.includes("choch")) c = "bg-indigo-500/15 text-indigo-300 border border-indigo-500/25";
+      else if (l.includes("ob")) c = "bg-amber-500/15 text-amber-200 border border-amber-500/25";
+      else if (l.includes("fvg")) c = "bg-violet-500/15 text-violet-300 border border-violet-500/25";
+      else if (l.includes("swept")) c = "bg-emerald-500/15 text-emerald-300 border border-emerald-500/25";
+      return '<span class="pill ' + c + '">' + part.replace(/(\d+\.\d{2})\d+/g, "$1") + "</span>";
     }).join("");
   }
 
@@ -322,18 +299,18 @@
     const st = document.getElementById("status");
     if (manual) {
       st.classList.remove("hidden");
-      st.innerHTML = ">> SCANNING MARKET...";
+      st.innerHTML = '<i class="fas fa-circle-notch fa-spin mr-2"></i>Analyzing…';
     }
     try {
       const res = await fetch(API_BASE + "/api/max-intelligence-signal/" + encodeURIComponent(symbol) + "?timeframe=" + tf);
-      if (!res.ok) throw new Error("ERR " + res.status);
+      if (!res.ok) throw new Error("API error " + res.status);
       const data = await res.json();
       render(data);
       loadHistory();
       st.classList.add("hidden");
       resetCount();
     } catch (e) {
-      st.innerHTML = '<span class="neon-mag">' + e.message + "</span>";
+      st.innerHTML = '<span class="text-rose-400">' + e.message + "</span>";
       st.classList.remove("hidden");
     }
   }
@@ -345,19 +322,19 @@
     const md = data.master_decision || {};
     document.getElementById("action").textContent = md.action || "—";
     document.getElementById("confidence").textContent = md.confidence_score || "—";
-    document.getElementById("status-badge").textContent = md.execution_status || "IDLE";
+    document.getElementById("status-badge").textContent = md.execution_status || "Idle";
     document.getElementById("symbol-display").textContent = (data.symbol || "") + " · " + (data.timeframe || "");
     document.getElementById("structure").textContent = data.market_structure || "—";
 
     const badge = document.getElementById("status-badge");
     const st = md.execution_status || "";
-    badge.className = "chip ";
-    if (st === "PENDING ENTRY") badge.className += "border-cyan-400 text-cyan-300 bg-cyan-500/10";
-    else if (st === "FILLED & ACTIVE") badge.className += "border-lime-400 text-lime-300 bg-lime-500/10";
-    else if (st.includes("MISS")) badge.className += "border-orange-400 text-orange-300";
-    else if (st.includes("CLOSED")) badge.className += "border-slate-500 text-slate-400";
-    else if (st.includes("BLOCKED")) badge.className += "border-pink-500 text-pink-300 bg-pink-500/10";
-    else badge.className += "border-cyan-500/40 text-cyan-400";
+    badge.className = "pill ";
+    if (st === "PENDING ENTRY") badge.className += "bg-indigo-500 text-white";
+    else if (st === "FILLED & ACTIVE") badge.className += "bg-emerald-500 text-white";
+    else if (st.includes("MISS")) badge.className += "bg-orange-500 text-white";
+    else if (st.includes("CLOSED")) badge.className += "bg-white/10 text-white/60";
+    else if (st.includes("BLOCKED")) badge.className += "bg-rose-500 text-white";
+    else badge.className += "bg-white/5 text-white/50";
 
     const tech = data.technical_layer || {};
     document.getElementById("ob").textContent = tech.order_block || "—";
@@ -366,7 +343,7 @@
     const bias = tech.institutional_bias || "NEUTRAL";
     const be = document.getElementById("bias");
     be.textContent = bias;
-    be.className = "text-sm font-semibold " + (bias === "BULLISH" ? "neon-lime" : bias === "BEARISH" ? "neon-mag" : "");
+    be.className = "text-sm font-semibold " + (bias === "BULLISH" ? "text-emerald-400" : bias === "BEARISH" ? "text-rose-400" : "");
 
     const exp = explainReason(tech, data);
     document.getElementById("entry-reason-summary").innerHTML = exp.html;
@@ -378,9 +355,9 @@
     const fund = data.fundamental_layer || {};
     document.getElementById("fund-status").textContent = fund.scalping_status || "—";
     document.getElementById("fund-recommendation").textContent = fund.recommendation || "—";
-    document.getElementById("next-event").textContent = fund.next_high_impact || "NONE";
+    document.getElementById("next-event").textContent = fund.next_high_impact || "None";
     document.getElementById("time-remaining").textContent =
-      fund.minutes_until_next != null ? fund.minutes_until_next + "M" : "—";
+      fund.minutes_until_next != null ? fund.minutes_until_next + " m" : "—";
 
     const box = document.getElementById("decision-box");
     box.classList.remove("glow-buy", "glow-sell", "glow-wait");
@@ -406,33 +383,33 @@
       const data = await res.json();
       const tb = document.getElementById("history-body");
       if (!data.history || !data.history.length) {
-        tb.innerHTML = '<tr><td colspan="9" class="px-4 py-8 text-center text-cyan-800 text-sm">NO DATA</td></tr>';
+        tb.innerHTML = '<tr><td colspan="9" class="px-4 py-10 text-center text-white/20 text-sm">Belum ada trade</td></tr>';
         return;
       }
       tb.innerHTML = data.history.map(t => {
-        let sc = "border-slate-600 text-slate-400";
-        if (t.status === "PENDING ENTRY") sc = "border-cyan-400 text-cyan-300";
-        else if (t.status === "FILLED & ACTIVE") sc = "border-lime-400 text-lime-300";
-        else if ((t.status || "").includes("MISS")) sc = "border-orange-400 text-orange-300";
-        else if ((t.status || "").includes("CLOSED")) sc = "border-slate-500 text-slate-400";
-        const tc = (t.type || "").includes("BUY") ? "neon-lime" : "neon-mag";
-        return `<tr class="border-b border-cyan-500/5">
-          <td class="px-3 py-2 text-cyan-800">${t.id}</td>
-          <td class="px-3 py-2 text-xs text-slate-500">${t.time}</td>
-          <td class="px-3 py-2 neon-cyan">${t.symbol || "-"}</td>
-          <td class="px-3 py-2 ${tc}">${t.type}</td>
-          <td class="px-3 py-2">${t.entry}</td>
-          <td class="px-3 py-2 neon-mag">${t.sl}</td>
-          <td class="px-3 py-2 neon-lime">${t.tp1}</td>
-          <td class="px-3 py-2">${t.close_price || "—"}</td>
-          <td class="px-3 py-2"><span class="chip ${sc}">${t.status}</span></td>
+        let sc = "bg-white/10 text-white/60";
+        if (t.status === "PENDING ENTRY") sc = "bg-indigo-500/90 text-white";
+        else if (t.status === "FILLED & ACTIVE") sc = "bg-emerald-500/90 text-white";
+        else if ((t.status || "").includes("MISS")) sc = "bg-orange-500/90 text-white";
+        else if ((t.status || "").includes("CLOSED")) sc = "bg-white/10 text-white/50";
+        const tc = (t.type || "").includes("BUY") ? "text-emerald-400" : "text-rose-400";
+        return `<tr class="border-b border-white/[0.03]">
+          <td class="px-4 py-2.5 text-white/30">${t.id}</td>
+          <td class="px-4 py-2.5 text-xs text-white/35 mono">${t.time}</td>
+          <td class="px-4 py-2.5 text-[#e8b86d] font-medium">${t.symbol || "-"}</td>
+          <td class="px-4 py-2.5 ${tc}">${t.type}</td>
+          <td class="px-4 py-2.5 mono">${t.entry}</td>
+          <td class="px-4 py-2.5 mono text-rose-400">${t.sl}</td>
+          <td class="px-4 py-2.5 mono text-emerald-400">${t.tp1}</td>
+          <td class="px-4 py-2.5 mono">${t.close_price || "—"}</td>
+          <td class="px-4 py-2.5"><span class="pill ${sc}">${t.status}</span></td>
         </tr>`;
       }).join("");
     } catch (e) { console.error(e); }
   }
 
   async function resetHistory() {
-    if (!confirm("RESET HISTORY?")) return;
+    if (!confirm("Hapus history?")) return;
     await fetch(API_BASE + "/api/reset-history");
     loadHistory();
   }
@@ -440,6 +417,9 @@
   function tick() {
     document.getElementById("countdown").textContent = left;
     document.getElementById("bar").style.width = (left / REFRESH * 100) + "%";
+    const c = document.getElementById("countdown");
+    if (left <= 10) c.classList.add("text-rose-400");
+    else { c.classList.remove("text-rose-400"); c.classList.add("text-[#e8b86d]"); }
     if (left <= 0) { fetchSignal(false); left = REFRESH; }
     else left--;
   }
