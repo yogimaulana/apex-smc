@@ -1,5 +1,6 @@
-# main.py - Apex SMC Intelligence v12.5
-# Zona high-prob (OB/FVG) = boleh sinyal | OTE = bonus | fix MISS | news warning | max SL $8
+# main.py - Apex SMC Intelligence v12.6
+# ANTICIPATION PENDING: sinyal di zona potensial sebelum harga sentuh
+# Zone-first | max SL $8 | news warning only | miss longgar + expire
 
 from fastapi import FastAPI, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -12,22 +13,21 @@ import re
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("SMC-Engine")
 
-app = FastAPI(title="Apex SMC Intelligence", version="12.5")
+app = FastAPI(title="Apex SMC Intelligence", version="12.6")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 HISTORY_FILE = "trade_history.json"
 LEARNING_FILE = "learning_stats.json"
-CACHE_TTL = 15
+CACHE_TTL = 20
 FUND_CACHE_TTL = 300
-MIN_SCORE_BASE = 76
-ENTRY_ZONE_ATR_FACTOR = 0.40
+MIN_SCORE_BASE = 74
+ENTRY_ZONE_ATR_FACTOR = 0.45
 
 MAX_SL_USD = 8.00
 MIN_SL_USD = 1.20
 TP1_RR = 1.6
 TP2_RR = 2.2
-ENTRY_ATR_FALLBACK = 0.12
-OTE_LOW, OTE_HIGH = 0.62, 0.79
+PENDING_EXPIRE_MIN = 180  # 3 jam tanpa fill → EXPIRED (bukan MISS)
 
 INTERVAL_MAP = {
     "1min": "1m", "1m": "1m", "5min": "5m", "5m": "5m",
@@ -119,7 +119,7 @@ def fetch_candles(symbol: str, interval: str = "5min", outputsize: int = 100, fo
         return cache_store[key]["data"]
     try:
         url = f"https://biquote.io/api/{sym}/ohlc?interval={bq_interval}&limit={outputsize}"
-        r = requests.get(url, timeout=12)
+        r = requests.get(url, timeout=10)
         data = r.json()
         bars = data.get("bars") or []
         if not bars:
@@ -195,20 +195,6 @@ def get_structure_bias(candles) -> Tuple[str, str]:
             structure, bias = "BULLISH BOS (Break High)", "BULLISH"
     return bias, structure
 
-def swing_range(candles) -> Optional[Tuple[float, float]]:
-    highs = np.array([c["high"] for c in candles])
-    lows = np.array([c["low"] for c in candles])
-    sh, sl = find_swings(highs, lows, 2, 2)
-    if len(sh) < 1 or len(sl) < 1:
-        hi = float(np.max(highs[-25:]))
-        lo = float(np.min(lows[-25:]))
-    else:
-        hi = max(sh[-1][1], float(np.max(highs[-20:])))
-        lo = min(sl[-1][1], float(np.min(lows[-20:])))
-    if hi - lo < 1.0:
-        return None
-    return lo, hi
-
 def parse_zone(text: str) -> Optional[Tuple[float, float]]:
     if not text or text in ("None", "No Valid FVG"):
         return None
@@ -220,84 +206,66 @@ def parse_zone(text: str) -> Optional[Tuple[float, float]]:
 
 def build_execution_levels(bias: str, current: float, atr: float, ob_str: str, fvg_str: str, candles: List[Dict]) -> Optional[Dict]:
     """
-    Wajib: zona OB atau FVG valid (high probability).
-    OTE = bonus (in_ote=True), BUKAN syarat.
-    SL struktur + CAP $8. Anti miss instan (TP di sisi benar vs harga).
+    ANTICIPATION: pasang limit di zona SEKARANG, harga boleh masih jauh.
+    BUY: entry zona < current | SELL: entry zona > current
+    Tidak reject hanya karena TP masih di bawah/atas market.
     """
     is_buy = bias == "BULLISH"
     zone = None
     if is_buy and "Bullish OB" in (ob_str or ""):
         zone = parse_zone(ob_str)
-    elif not is_buy and "Bearish OB" in (ob_str or ""):
+    elif (not is_buy) and "Bearish OB" in (ob_str or ""):
         zone = parse_zone(ob_str)
     if zone is None:
         if is_buy and "Bullish FVG" in (fvg_str or ""):
             zone = parse_zone(fvg_str)
-        elif not is_buy and "Bearish FVG" in (fvg_str or ""):
+        elif (not is_buy) and "Bearish FVG" in (fvg_str or ""):
             zone = parse_zone(fvg_str)
     if zone is None:
         return None
 
-    # OTE check (bonus only)
-    in_ote = False
-    sr = swing_range(candles)
-    if sr:
-        lo, hi = sr
-        rng = hi - lo
-        mid_z = (zone[0] + zone[1]) / 2
-        if is_buy:
-            ote_lo, ote_hi = hi - OTE_HIGH * rng, hi - OTE_LOW * rng
-            in_ote = ote_lo <= mid_z <= ote_hi
-        else:
-            ote_lo, ote_hi = lo + OTE_LOW * rng, lo + OTE_HIGH * rng
-            in_ote = ote_lo <= mid_z <= ote_hi
-
+    entry = round((zone[0] + zone[1]) / 2, 2)
     highs = [c["high"] for c in candles]
     lows = [c["low"] for c in candles]
     sh, sl_pts = find_swings(np.array(highs), np.array(lows), 2, 2)
 
-    entry = round((zone[0] + zone[1]) / 2, 2)
-
     if is_buy:
+        # Zona harus di BAWAH harga → pending buy menunggu pullback
         if entry >= current:
-            entry = round(min(zone[1], current - atr * ENTRY_ATR_FALLBACK), 2)
-        if entry >= current:
-            return None
+            # coba edge bawah zona
+            entry = round(zone[0], 2)
+            if entry >= current:
+                return None  # zona sudah dilalui, tidak antisipasi mundur
         struct_sl = zone[0] - atr * 0.15
         if sl_pts:
             struct_sl = min(struct_sl, sl_pts[-1][1] - atr * 0.1)
-        raw_dist = abs(entry - struct_sl)
-        if raw_dist > MAX_SL_USD:
+        raw = abs(entry - struct_sl)
+        if raw > MAX_SL_USD or raw <= 0:
             return None
-        sl_dist = max(MIN_SL_USD, min(raw_dist, MAX_SL_USD))
+        sl_dist = max(MIN_SL_USD, min(raw, MAX_SL_USD))
         sl = round(entry - sl_dist, 2)
         tp1 = round(entry + sl_dist * TP1_RR, 2)
         tp2 = round(entry + sl_dist * TP2_RR, 2)
-        if tp1 <= current:
-            return None
     else:
         if entry <= current:
-            entry = round(max(zone[0], current + atr * ENTRY_ATR_FALLBACK), 2)
-        if entry <= current:
-            return None
+            entry = round(zone[1], 2)
+            if entry <= current:
+                return None
         struct_sl = zone[1] + atr * 0.15
         if sh:
             struct_sl = max(struct_sl, sh[-1][1] + atr * 0.1)
-        raw_dist = abs(struct_sl - entry)
-        if raw_dist > MAX_SL_USD:
+        raw = abs(struct_sl - entry)
+        if raw > MAX_SL_USD or raw <= 0:
             return None
-        sl_dist = max(MIN_SL_USD, min(raw_dist, MAX_SL_USD))
+        sl_dist = max(MIN_SL_USD, min(raw, MAX_SL_USD))
         sl = round(entry + sl_dist, 2)
         tp1 = round(entry - sl_dist * TP1_RR, 2)
         tp2 = round(entry - sl_dist * TP2_RR, 2)
-        if tp1 >= current:
-            return None
 
     return {
         "entry": entry, "sl": sl, "tp1": tp1, "tp2": tp2,
         "rrr": f"1:{TP1_RR}", "sl_dist": round(sl_dist, 2),
-        "in_ote": in_ote,
-        "quality": "OTE+ZONE" if in_ote else "ZONE"
+        "mode": "ANTICIPATION_PENDING"
     }
 
 def make_pattern_key(smc: dict) -> str:
@@ -321,37 +289,29 @@ def record_trade_result(trade: Dict):
     if "TP1 HIT" in status or "TP HIT" in status:
         learning_stats["tp_hits"] = learning_stats.get("tp_hits", 0) + 1
         learning_stats["by_pattern"][pattern]["tp"] += 1
-        learning_stats["by_pattern"][pattern]["last_result"] = "TP"
         result = "TP"
     elif "SL HIT" in status:
         learning_stats["sl_hits"] = learning_stats.get("sl_hits", 0) + 1
         learning_stats["by_pattern"][pattern]["sl"] += 1
-        learning_stats["by_pattern"][pattern]["last_result"] = "SL"
         result = "SL"
-    elif "MISS ENTRY" in status or "INVALIDATED" in status or "INVALID SETUP" in status:
+    elif "MISS" in status or "EXPIRED" in status or "INVALIDATED" in status:
         learning_stats["miss_entries"] = learning_stats.get("miss_entries", 0) + 1
         learning_stats["by_pattern"][pattern]["miss"] += 1
-        learning_stats["by_pattern"][pattern]["last_result"] = "MISS"
         result = "MISS"
     else:
         return
     recent = learning_stats.get("recent_results", [])
     recent.insert(0, {"pattern": pattern, "result": result, "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
     learning_stats["recent_results"] = recent[:20]
-    pstats = learning_stats["by_pattern"][pattern]
-    if result == "SL" and pstats["sl"] >= 2:
-        last_two = [r for r in recent if r["pattern"] == pattern][:2]
-        if len(last_two) >= 2 and all(r["result"] == "SL" for r in last_two):
-            learning_stats.setdefault("blocked_patterns", {})[pattern] = 3
     save_learning()
 
 def apply_learning_to_score(base_score: int, pattern_key: str) -> Tuple[int, str]:
     score = base_score + int(learning_stats.get("score_adjust", 0))
-    notes = []
     blocked = learning_stats.get("blocked_patterns", {})
     if pattern_key in blocked and blocked[pattern_key] > 0:
         return 0, "PATTERN_BLOCKED_RECENT_SL"
     p = learning_stats.get("by_pattern", {}).get(pattern_key)
+    notes = []
     if p:
         total = p["tp"] + p["sl"]
         if total >= 3:
@@ -366,16 +326,21 @@ def apply_learning_to_score(base_score: int, pattern_key: str) -> Tuple[int, str
 
 def get_dynamic_min_score() -> int:
     adj = int(learning_stats.get("score_adjust", 0))
-    return max(70, min(84, MIN_SCORE_BASE - adj))
+    return max(68, min(82, MIN_SCORE_BASE - adj))
 
 def is_same_entry_zone(symbol: str, new_entry: float, atr: float) -> bool:
     sym = norm_symbol(symbol)
     for t in trade_history:
         if norm_symbol(t.get("symbol", "")) != sym:
             continue
+        if t.get("status") not in ("PENDING ENTRY", "FILLED & ACTIVE", "CLOSED - MISS ENTRY", "CLOSED - EXPIRED"):
+            # cek juga recent closed same zone
+            pass
         try:
             if abs(new_entry - float(t["entry"])) < (atr * ENTRY_ZONE_ATR_FACTOR):
-                return True
+                # hanya block jika masih pending/active atau baru < 2 jam
+                if t.get("status") in ("PENDING ENTRY", "FILLED & ACTIVE"):
+                    return True
         except:
             continue
     return False
@@ -518,9 +483,9 @@ def analyze_pure_smc(candles, htf_candles=None):
     elif not has_structure:
         setup = "WAIT - NO CLEAR STRUCTURE"
     elif bias == "BULLISH" and score >= min_sc and confluence_quality in ("clean", "partial") and (ob_aligned or fvg_aligned):
-        setup = "BUY LIMIT (ZONE)"
+        setup = "BUY LIMIT (ANTICIPATION)"
     elif bias == "BEARISH" and score >= min_sc and confluence_quality in ("clean", "partial") and (ob_aligned or fvg_aligned):
-        setup = "SELL LIMIT (ZONE)"
+        setup = "SELL LIMIT (ANTICIPATION)"
 
     return {
         "bias": bias, "bos_choch": structure, "order_block": ob, "fvg": fvg,
@@ -570,35 +535,42 @@ def analyze_fundamental_xau():
     if not next_ev:
         return {
             "scalping_status": "SAFE FOR SCALPING", "risk_level": "LOW",
-            "recommendation": "Tidak ada High Impact. Scalping aman.",
+            "recommendation": "Tidak ada High Impact dekat.",
             "next_high_impact": "None", "minutes_until_next": None,
             "upcoming_events": [], "warning_only": True
         }
     if next_ev["minutes_left"] <= 60:
         return {
             "scalping_status": "⚠ WARNING - HIGH IMPACT SOON", "risk_level": "HIGH",
-            "recommendation": f"PERINGATAN: {next_ev['name']} dalam {next_ev['minutes_left']} menit. Sinyal tetap aktif — kelola risk manual.",
+            "recommendation": f"{next_ev['name']} · {round(next_ev['minutes_left'])} menit lagi",
             "next_high_impact": next_ev["name"], "minutes_until_next": next_ev["minutes_left"],
             "upcoming_events": upcoming[:4], "warning_only": True
         }
     if next_ev["minutes_left"] <= 120:
         return {
             "scalping_status": "⚠ CAUTION - NEWS WITHIN 2H", "risk_level": "MEDIUM",
-            "recommendation": f"Hati-hati: {next_ev['name']} dalam {round(next_ev['minutes_left']/60, 1)} jam. Sinyal tidak diblokir.",
+            "recommendation": f"{next_ev['name']} · ~{round(next_ev['minutes_left']/60, 1)} jam",
             "next_high_impact": next_ev["name"], "minutes_until_next": next_ev["minutes_left"],
             "upcoming_events": upcoming[:4], "warning_only": True
         }
     return {
         "scalping_status": "SAFE FOR SCALPING", "risk_level": "LOW",
-        "recommendation": f"Aman. Next event masih {round(next_ev['minutes_left']/60, 1)} jam lagi.",
+        "recommendation": f"Next: {next_ev['name']} · {round(next_ev['minutes_left'])} m",
         "next_high_impact": next_ev["name"], "minutes_until_next": next_ev["minutes_left"],
         "upcoming_events": upcoming[:4], "warning_only": True
     }
 
 def manage_trades(symbol: str, current_price: float, current_bias: Optional[str] = None):
+    """
+    PENDING: fill jika sentuh entry.
+    Tidak MISS instan hanya karena harga jauh / di atas TP.
+    MISS hanya jika invalidasi ketat; else EXPIRED setelah PENDING_EXPIRE_MIN.
+    """
     global trade_history
     changed = False
     sym = norm_symbol(symbol)
+    now = datetime.now()
+
     for t in trade_history:
         if norm_symbol(t.get("symbol", "")) != sym:
             continue
@@ -606,55 +578,44 @@ def manage_trades(symbol: str, current_price: float, current_bias: Optional[str]
         is_buy = "BUY" in t["type"]
 
         if t["status"] == "PENDING ENTRY":
+            # Expire waktu
+            try:
+                created = datetime.strptime(t["time"], "%Y-%m-%d %H:%M:%S")
+                age_min = (now - created).total_seconds() / 60
+            except Exception:
+                age_min = 0
+
+            # Invalidasi bias berbalik
             if current_bias and current_bias != "NEUTRAL":
                 if is_buy and current_bias == "BEARISH":
                     t["status"] = "CLOSED - INVALIDATED"
                     t["close_price"] = str(round(current_price, 2))
-                    t["close_time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    t["close_time"] = now.strftime("%Y-%m-%d %H:%M:%S")
                     changed = True
                     record_trade_result(t)
                     continue
                 if not is_buy and current_bias == "BULLISH":
                     t["status"] = "CLOSED - INVALIDATED"
                     t["close_price"] = str(round(current_price, 2))
-                    t["close_time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    t["close_time"] = now.strftime("%Y-%m-%d %H:%M:%S")
                     changed = True
                     record_trade_result(t)
                     continue
 
             filled = (is_buy and current_price <= entry) or (not is_buy and current_price >= entry)
-            if is_buy:
-                missed = (not filled) and (current_price >= tp1) and (entry < tp1)
-            else:
-                missed = (not filled) and (current_price <= tp1) and (entry > tp1)
-
-            create_px = float(t.get("create_price") or entry)
-            if is_buy and missed and create_px >= tp1:
-                t["status"] = "CLOSED - INVALID SETUP"
-                t["close_price"] = str(round(current_price, 2))
-                t["close_time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                changed = True
-                record_trade_result(t)
-                continue
-            if not is_buy and missed and create_px <= tp1:
-                t["status"] = "CLOSED - INVALID SETUP"
-                t["close_price"] = str(round(current_price, 2))
-                t["close_time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                changed = True
-                record_trade_result(t)
-                continue
 
             if filled:
                 t["status"] = "FILLED & ACTIVE"
-                t["fill_time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                t["fill_time"] = now.strftime("%Y-%m-%d %H:%M:%S")
                 t["fill_price"] = str(round(current_price, 2))
                 changed = True
-            elif missed:
-                t["status"] = "CLOSED - MISS ENTRY"
+            elif age_min >= PENDING_EXPIRE_MIN:
+                t["status"] = "CLOSED - EXPIRED"
                 t["close_price"] = str(round(current_price, 2))
-                t["close_time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                t["close_time"] = now.strftime("%Y-%m-%d %H:%M:%S")
                 changed = True
                 record_trade_result(t)
+            # TIDAK auto MISS hanya karena price >= tp1 saat masih pending anticipation
 
         elif t["status"] == "FILLED & ACTIVE":
             hit = None
@@ -671,9 +632,10 @@ def manage_trades(symbol: str, current_price: float, current_bias: Optional[str]
             if hit:
                 t["status"] = f"CLOSED - {hit}"
                 t["close_price"] = str(round(current_price, 2))
-                t["close_time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                t["close_time"] = now.strftime("%Y-%m-%d %H:%M:%S")
                 changed = True
                 record_trade_result(t)
+
     if changed:
         save_history()
     return changed
@@ -695,9 +657,10 @@ async def get_signal(
 
     price_data = fetch_realtime_price(decoded)
     current_price = price_data["price"]
-    candles = fetch_candles(decoded, timeframe, outputsize=100, force=True)
+    # force=False dulu biar cepat; force jika cache kosong
+    candles = fetch_candles(decoded, timeframe, outputsize=100, force=False)
     if not candles:
-        candles = fetch_candles(decoded, timeframe, force=False)
+        candles = fetch_candles(decoded, timeframe, force=True)
     if not candles:
         raise HTTPException(503, detail="Market data unavailable (biquote OHLC).")
     if current_price > 0:
@@ -743,7 +706,7 @@ async def get_signal(
                 "sl_hits": learning_stats.get("sl_hits", 0),
                 "total_closed": learning_stats.get("total_closed", 0)
             },
-            "ai_rationale": f"Pair: {decoded} | Status: {active['status']}"
+            "ai_rationale": f"v12.6 | Active {active['status']} | anticipation pending"
         }
 
     smc = smc_preview
@@ -756,9 +719,6 @@ async def get_signal(
     status = "IDLE"
     entry = sl = tp1 = tp2 = "-"
     rrr = "0.0"
-    zone_quality = ""
-
-    # News = warning only (tidak block)
 
     if "HTF CONFLICT" in action or "NO CLEAR STRUCTURE" in action or "LEARNING BLOCK" in action:
         status = action.replace("WAIT - ", "")
@@ -771,15 +731,11 @@ async def get_signal(
             smc["order_block"], smc["fvg"], candles
         )
         if levels is None:
-            action = "WAIT - NO VALID ZONE / RISK"
-            status = "ZONE OR RISK REJECT"
+            action = "WAIT - NO VALID ZONE AHEAD"
+            status = "ZONE ALREADY PASSED OR RISK"
         else:
             entry, sl, tp1, tp2 = levels["entry"], levels["sl"], levels["tp1"], levels["tp2"]
             rrr = levels["rrr"]
-            zone_quality = levels.get("quality", "ZONE")
-            if levels.get("in_ote"):
-                confidence = min(98, confidence + 6)
-                action = action.replace("(ZONE)", "(OTE+ZONE)")
             if is_same_entry_zone(decoded, float(entry), atr_val):
                 action, status = "WAIT - SAME ENTRY ZONE", "DUPLICATE ZONE"
                 entry = sl = tp1 = tp2 = "-"
@@ -794,7 +750,7 @@ async def get_signal(
             "entry": str(entry), "sl": str(sl), "tp1": str(tp1), "tp2": str(tp2),
             "rrr": rrr, "status": status, "atr_used": atr_val,
             "create_price": str(round(current_price, 2)),
-            "zone_quality": zone_quality,
+            "mode": "ANTICIPATION",
             "order_block": smc["order_block"], "entry_reason": smc["entry_reason"],
             "bias": smc["bias"], "htf_bias": smc["htf_bias"],
             "score": smc["score"], "score_label": smc["score_label"],
@@ -805,13 +761,11 @@ async def get_signal(
         save_history()
 
     rationale = (
-        f"v12.5 | {decoded} | Score {confidence} | {smc['confluence_quality']} | "
-        f"HTF {smc['htf_bias']} | Zone-first (OTE bonus) | Max SL ${MAX_SL_USD}"
+        f"v12.6 ANTICIPATION | {decoded} | Score {confidence} | {smc['confluence_quality']} | "
+        f"HTF {smc['htf_bias']} | Pending di zona sebelum harga sentuh"
     )
-    if zone_quality:
-        rationale += f" | {zone_quality}"
     if fund.get("risk_level") in ("HIGH", "MEDIUM"):
-        rationale += f" | ⚠ NEWS: {fund.get('next_high_impact')} ({fund.get('minutes_until_next')}m)"
+        rationale += f" | ⚠ {fund.get('next_high_impact')} ({fund.get('minutes_until_next')}m)"
 
     return {
         "symbol": decoded, "timeframe": timeframe,
@@ -836,8 +790,7 @@ async def get_signal(
             "current_price": str(round(current_price, 2)),
             "price_source": price_data.get("source", "biquote"),
             "last_candle_time": last_candle_time,
-            "entry_reason": smc["entry_reason"],
-            "zone_quality": zone_quality or "-"
+            "entry_reason": smc["entry_reason"]
         },
         "learning": {
             "score_adjust": learning_stats.get("score_adjust", 0),
@@ -886,11 +839,12 @@ async def reset_history():
 async def health():
     return {
         "status": "healthy",
-        "version": "12.5",
+        "version": "12.6",
+        "mode": "ANTICIPATION_PENDING",
         "data_source": "biquote.io",
         "max_sl_usd": MAX_SL_USD,
-        "entry_mode": "zone_first_ote_bonus",
-        "miss_entry_fixed": True,
+        "pending_expire_min": PENDING_EXPIRE_MIN,
+        "miss_on_tp_while_pending": False,
         "news_blocks_signal": False,
         "trades": len(trade_history),
         "min_score": get_dynamic_min_score()
